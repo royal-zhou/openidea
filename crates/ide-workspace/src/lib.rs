@@ -10,6 +10,7 @@ pub mod file_moves;
 pub mod file_refs;
 pub mod history;
 pub mod memory;
+pub mod module_refs;
 pub mod process;
 pub mod recent;
 pub mod roots;

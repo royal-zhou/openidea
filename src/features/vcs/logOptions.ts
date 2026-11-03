@@ -24,6 +24,8 @@ export interface LogOptions {
   highlightCurrentBranch: boolean;
   /** The Branches pane on the left of the log. */
   showBranches: boolean;
+  /** Ref names with `/` are grouped into folders; off = one flat row per ref. */
+  branchFolders: boolean;
   /** Changed files grouped by directory (else a flat list). */
   groupByDirectory: boolean;
   /** Selecting a changed file shows its diff in the editor's preview tab. */
@@ -48,6 +50,7 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   highlightMerges: true,
   highlightCurrentBranch: true,
   showBranches: true,
+  branchFolders: true,
   groupByDirectory: true,
   diffPreview: true,
 };

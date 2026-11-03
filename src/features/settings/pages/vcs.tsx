@@ -482,7 +482,7 @@ export const VCS_PAGES: PageSpec[] = [
     title: "Git",
     order: 8,
     projectScope: true,
-    keywords: ["git", "executable", "push", "pull", "update"],
+    keywords: ["git", "executable", "push", "pull", "update", "staging", "staged", "unstaged"],
     sections: [
       {
         options: [
@@ -493,6 +493,7 @@ export const VCS_PAGES: PageSpec[] = [
             component: GitExecutableRow,
           },
           { kind: "toggle", key: "vcs.git.inlineBlame", label: "Show inline blame for the current line" },
+          { kind: "toggle", key: "vcs.git.stagingArea", label: "Enable staging area" },
         ],
       },
       {

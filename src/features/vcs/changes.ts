@@ -3,13 +3,77 @@ import type { ChangelistState, FileStatus } from "@/bindings";
 import { baseName, dirName, effectiveKind, relTo, repoLabel, rootOf, stripSlash, type EffectiveKind } from "./model";
 import { tx } from "@/platform/i18n";
 
-export type GroupId = "conflicts" | "changes" | "unversioned";
+export type GroupId = "conflicts" | "changes" | "unversioned" | "staged" | "unstaged";
 
 export const GROUP_LABEL: Record<GroupId, string> = {
   conflicts: "Merge Conflicts",
   changes: "Changes",
   unversioned: "Unversioned Files",
+  staged: "Staged",
+  unstaged: "Unstaged",
 };
+
+/**
+ * Groups of the staging-area commit form (Settings › Version Control › Git › Enable
+ * staging area): the checkbox mirrors the index, and a file with both staged and
+ * unstaged edits shows in both groups, as in IDEA.
+ */
+export function stagingGroupsOf(fs: FileStatus): GroupId[] {
+  const kind = effectiveKind(fs);
+  if (!kind || kind === "ignored") return [];
+  if (kind === "conflicted") return ["conflicts"];
+  if (kind === "untracked") return ["unversioned"];
+  const out: GroupId[] = [];
+  if (fs.staged) out.push("staged");
+  if (fs.unstaged) out.push("unstaged");
+  return out;
+}
+
+/**
+ * The staging-area form commits exactly the index: no implicit staging or unstaging.
+ */
+export function stagingPlan(status: readonly FileStatus[]): CommitPlan {
+  return { stage: [], unstage: [], included: status.filter((f) => f.staged), partial: [] };
+}
+
+/** Inclusion for the staging-area form: the checkbox is the file's staged state. */
+export function withStagedChecks(status: readonly FileStatus[]): Map<string, CheckState> {
+  const checks = new Map<string, CheckState>();
+  for (const fs of status) checks.set(fs.path, fs.staged ? "all" : "none");
+  return checks;
+}
+
+/**
+ * Checkbox of a staging-area row. A file with both staged and unstaged edits has a
+ * row in each group, so the check follows the group: staged rows are in the index,
+ * every other row is not.
+ */
+export function stagingNodeChecked(group: GroupId): boolean {
+  return group === "staged";
+}
+
+/**
+ * Paths a staging-area checkbox toggles. The clicked row decides the operation
+ * (staged rows leave the index, every other row enters it); a mixed selection
+ * only moves rows of that same group. Conflicts are left alone.
+ */
+export function stagingToggle(
+  clicked: GroupId,
+  nodes: readonly { group: GroupId; files: readonly FileStatus[] }[],
+): { stage: boolean; paths: string[] } {
+  if (clicked === "conflicts") return { stage: false, paths: [] };
+  const stage = clicked !== "staged";
+  const paths = [
+    ...new Set(
+      nodes
+        .filter((n) => n.group === clicked)
+        .flatMap((n) => n.files)
+        .filter((f) => f.unstaged !== "conflicted" && f.staged !== "conflicted")
+        .map((f) => stripSlash(f.path)),
+    ),
+  ];
+  return { stage, paths };
+}
 
 /**
  * Inclusion of a file in the next commit:
@@ -84,7 +148,7 @@ export function aggregateCheck(files: readonly FileStatus[], checks: ReadonlyMap
   };
 }
 
-const KIND_ORDER: GroupId[] = ["conflicts", "changes", "unversioned"];
+const KIND_ORDER: GroupId[] = ["conflicts", "staged", "unstaged", "changes", "unversioned"];
 
 function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, scope: string = group): ChangeNode {
   const path = stripSlash(fs.path);
@@ -224,7 +288,33 @@ export function buildChangeTree(
   groupByDir: boolean,
   lists?: ChangelistState,
   repos: readonly string[] = [],
+  staging = false,
 ): ChangeNode[] {
+  if (staging) {
+    // The staging-area form: Staged / Unstaged groups instead of change lists, and
+    // no per-file inclusion overrides (the checkbox is the staged state itself).
+    const byGroup = new Map<GroupId, FileStatus[]>();
+    for (const fs of status)
+      for (const g of stagingGroupsOf(fs)) {
+        let list = byGroup.get(g);
+        if (!list) byGroup.set(g, (list = []));
+        list.push(fs);
+      }
+    const roots: ChangeNode[] = [];
+    for (const g of KIND_ORDER) {
+      const files = byGroup.get(g) ?? [];
+      if (!files.length) continue;
+      roots.push({
+        key: `group:${g}`,
+        type: "group",
+        label: GROUP_LABEL[g],
+        group: g,
+        children: repoNodes(files, root, g, groupByDir, g, repos),
+        files,
+      });
+    }
+    return roots;
+  }
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
     const g = groupOf(fs);

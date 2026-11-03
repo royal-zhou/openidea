@@ -178,3 +178,55 @@ fn remotes_and_worktrees_are_managed() {
     repo.remove_worktree(&wt, false).unwrap();
     assert_eq!(repo.worktrees().unwrap().len(), 1);
 }
+
+#[test]
+fn file_history_links_the_commits_it_shows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"], None);
+    let c1 = commit(dir, "a.txt", "c1", 1000);
+    let c2 = commit(dir, "b.txt", "c2", 2000);
+    let c3 = commit(dir, "a.txt", "c3", 3000);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let path = || Some(dir.join("a.txt").into());
+
+    let out = repo.log(&LogQuery { path: path(), ..Default::default() }).unwrap();
+    assert_eq!(ids(&out), vec![c3.clone(), c1.clone()]);
+    // Diffs and operations keep the commit's real parent…
+    assert_eq!(parents_of(&out, &c3), vec![c2]);
+    // …while the graph links the commits the log shows, past the one it leaves out.
+    assert_eq!(out[0].graph_parents, vec![c1.clone()]);
+    assert!(out[1].graph_parents.is_empty());
+
+    // Rewriting does not depend on the page: a later page carries the same edges.
+    let page = repo.log(&LogQuery { path: path(), skip: 1, limit: 1, ..Default::default() }).unwrap();
+    assert_eq!(ids(&page), vec![c1]);
+    assert!(page[0].graph_parents.is_empty());
+}
+
+#[test]
+fn file_history_links_a_merge_to_both_shown_sides() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"], None);
+    let c1 = commit(dir, "a.txt", "base", 1000);
+    git(dir, &["checkout", "-q", "-b", "feat"], None);
+    let f1 = commit(dir, "a.txt", "feat a", 2000);
+    git(dir, &["checkout", "-q", "main"], None);
+    let c2 = commit(dir, "b.txt", "main b", 3000);
+    // The merge resolves a.txt itself, so it differs from both parents and is shown.
+    git(dir, &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"], Some(4000));
+    std::fs::write(dir.join("a.txt"), "resolved").unwrap();
+    git(dir, &["add", "-A"], None);
+    git(dir, &["commit", "-q", "--amend", "--no-edit"], Some(4000));
+    let m = git(dir, &["rev-parse", "HEAD"], None);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+
+    let out = repo.log(&LogQuery { path: Some(dir.join("a.txt").into()), ..Default::default() }).unwrap();
+    assert_eq!(ids(&out), vec![m.clone(), f1.clone(), c1.clone()]);
+    // The real parents stay: main's side (c2) did not touch the file.
+    assert_eq!(parents_of(&out, &m), vec![c2, f1.clone()]);
+    // The graph joins the merge to both lines of the file's history.
+    assert_eq!(out[0].graph_parents, vec![c1.clone(), f1.clone()]);
+    assert_eq!(out[1].graph_parents, vec![c1.clone()]);
+}

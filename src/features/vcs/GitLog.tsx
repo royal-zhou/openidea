@@ -38,7 +38,15 @@ import {
   copyText,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
-import { collapseLinear, computeGraph, hideLongEdges, laneColor, reachableFrom, type GraphRow } from "./graph";
+import {
+  collapseLinear,
+  computeGraph,
+  hideLongEdges,
+  laneColor,
+  laneCount,
+  reachableFrom,
+  type GraphRow,
+} from "./graph";
 import {
   closeLogTab,
   extendCommitSelection,
@@ -273,6 +281,8 @@ export function BranchesPanel() {
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranches((s) => s.names);
+  // Group Branches by Folder: off lists the refs as one row each, with their full name.
+  const folders = useLogOptions((s) => s.branchFolders);
   const filterBranches = useGitLog((s) => s.filters.branches);
   const filterRepositories = useGitLog((s) => s.filters.repositories);
   const [query, setQuery] = useState("");
@@ -302,7 +312,7 @@ export function BranchesPanel() {
     };
   }, [repositories, version]);
   const allRoots = useMemo(() => {
-    if (repositories.length < 2) return buildBranchTree(branches, favorites, tags);
+    if (repositories.length < 2) return buildBranchTree(branches, favorites, tags, !folders);
     return buildRepositoryBranchTree(
       repositories.map((repo) => ({
         root: repo,
@@ -311,8 +321,9 @@ export function BranchesPanel() {
         tags: allTags[repo] ?? [],
       })),
       favorites,
+      !folders,
     );
-  }, [repositories, allBranches, allTags, branches, favorites, tags]);
+  }, [repositories, allBranches, allTags, branches, favorites, tags, folders]);
   const roots = useMemo(() => filterBranchTree(allRoots, query), [allRoots, query]);
   // While searching every match is shown expanded.
   const searchExpanded = useMemo(() => (query.trim() ? new Set(branchGroupKeys(roots)) : undefined), [roots, query]);
@@ -420,9 +431,16 @@ export function BranchesPanel() {
             placeholder="Branch or tag"
             aria-label="Filter branches and tags"
           />
+          <IconButton
+            icon={folders ? "hierarchy" : "list"}
+            title={folders ? "Show Branches as a List" : "Group Branches by Folder"}
+            size="small"
+            action="vcs.log.branches.groupByFolder"
+            pressed={folders}
+          />
         </div>
         <Tree<BranchTreeNode>
-          key={`${root ?? ""}:${branchesLoaded}`}
+          key={`${root ?? ""}:${branchesLoaded}:${folders}`}
           roots={roots}
           getKey={(n) => n.key}
           getLabel={(n) => (n.kind === "head" || n.kind === "group" ? tx(n.label) : n.label)}
@@ -479,6 +497,7 @@ export function BranchesPanel() {
           }
           aria-label="Branches"
           className={styles.branchTree}
+          horizontalScroll
         />
       </div>
     </div>
@@ -950,9 +969,11 @@ function CommitList() {
     return collapsed.commits.map((c) => byKey.get(c.id)!);
   }, [all, collapsed]);
   const rows = useMemo(() => {
-    const laid = collapsed ? computeGraph(collapsed.graph).rows : allRows;
+    const laid = collapsed ? computeGraph(collapsed.graph) : allRows;
     return opts.longEdges ? laid : hideLongEdges(laid);
   }, [collapsed, allRows, opts.longEdges]);
+  // Every row reserves the widest graph, so subjects line up instead of stepping right.
+  const graphLanes = useMemo(() => laneCount(rows), [rows]);
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
   // Nothing to tell apart when the log is filtered to the current branch.
@@ -1068,6 +1089,7 @@ function CommitList() {
                 id={`commit-${v.index}`}
                 commit={c}
                 graph={rows[v.index]}
+                graphLanes={graphLanes}
                 top={v.start}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
@@ -1089,6 +1111,7 @@ const CommitRow = memo(function CommitRow({
   id,
   commit: c,
   graph,
+  graphLanes,
   top,
   selected,
   head,
@@ -1101,6 +1124,7 @@ const CommitRow = memo(function CommitRow({
   id: string;
   commit: Commit;
   graph: GraphRow | undefined;
+  graphLanes: number;
   top: number;
   selected: boolean;
   head: boolean;
@@ -1143,7 +1167,7 @@ const CommitRow = memo(function CommitRow({
         </span>
       )}
       <span className={styles.colSubject}>
-        {graph && <GraphCell row={graph} head={head} />}
+        {graph && <GraphCell row={graph} head={head} lanes={graphLanes} />}
         {opts.refsOnLeft && refs}
         <span
           className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
@@ -1174,8 +1198,8 @@ function seg(fromX: number, fromY: number, toX: number, toY: number) {
   return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
 }
 
-export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
-  const width = Math.min(row.width, 24) * LANE;
+export function GraphCell({ row, head, lanes }: { row: GraphRow; head?: boolean; lanes: number }) {
+  const width = Math.max(1, lanes) * LANE;
   const cy = ROW / 2;
   return (
     <svg className={styles.graph} width={width} height={ROW} aria-hidden>

@@ -323,6 +323,8 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("web_goto", { doc, pos })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	/**  The file a JS/TS module specifier names (`@/x`, `@acme/ui`, `#internal`). */
+	fsResolveModule: (from: IpcPath, specifier: string) => typedError<ModuleTarget[], IdeError>(__TAURI_INVOKE("fs_resolve_module", { from, specifier })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
@@ -443,6 +445,7 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	vcsReadImage: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_read_image", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -1896,6 +1899,11 @@ export type Commit = {
 	id: string,
 	shortId: string,
 	parents: string[],
+	/**
+	 *  Graph edges of a filtered log (Show History of a file): parents rewritten past the
+	 *  commits the log leaves out, as git's own `--graph` does. Empty = use `parents`.
+	 */
+	graphParents?: string[],
 	author: string,
 	email: string,
 	timeMs: number | null,
@@ -3377,6 +3385,8 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**  Commit from the index (Staged / Unstaged groups). Off uses change-list checkboxes. */
+	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {
@@ -4491,6 +4501,14 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+/**  One resolved file (or folder) and the rule that produced it. */
+export type ModuleTarget = {
+	path: IpcPath,
+	dir: boolean,
+	/**  Human-readable origin, e.g. `tsconfig paths "@/*"` or `vite alias "@"`. */
+	via: string,
 };
 
 export type NewAgentTask = {
@@ -6306,6 +6324,11 @@ export type TypeScriptSettings = {
 	 *  or a path to a TypeScript `lib` directory.
 	 */
 	version?: string,
+	/**
+	 *  `prefix=target` aliases for Go to Declaration when no static config
+	 *  matches (dynamic vite/webpack configs). Targets are project-relative.
+	 */
+	pathAliases?: string[],
 };
 
 /**  A misspelt word. */

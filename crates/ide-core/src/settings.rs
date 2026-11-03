@@ -359,7 +359,7 @@ impl Default for AppearanceSettings {
             theme: "light".into(),
             accent: "#3871e1".into(),
             ui_font_size: 13.0,
-            locale: "en".into(),
+            locale: "system".into(),
             sync_with_os: false,
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
@@ -739,11 +739,14 @@ pub struct TypeScriptSettings {
     /// `bundled` (the server's own TypeScript), `workspace` (`node_modules/typescript`),
     /// or a path to a TypeScript `lib` directory.
     pub version: String,
+    /// `prefix=target` aliases for Go to Declaration when no static config
+    /// matches (dynamic vite/webpack configs). Targets are project-relative.
+    pub path_aliases: Vec<String>,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into() }
+        Self { version: "bundled".into(), path_aliases: Vec::new() }
     }
 }
 

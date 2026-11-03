@@ -2,7 +2,7 @@
  * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
@@ -40,10 +40,14 @@ import {
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
+  stagingNodeChecked,
+  stagingPlan,
+  stagingToggle,
   toggledCheck,
+  withStagedChecks,
   type ChangeNode,
 } from "./changes";
-import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
+import { applyStash, commitChanges, dropStash, isNewFile, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
@@ -56,6 +60,7 @@ import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
+import { runOp } from "./ops";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -193,6 +198,10 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
     // The whole list's files, as IDEA offers on a change list's header and as file
     // and directory nodes below it already offer (issue #473).
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…", disabled: !count },
+    // New files have no committed version to roll back to; they are deleted instead.
+    ...(count && files.every(isNewFile)
+      ? [{ kind: "action" as const, action: "vcs.delete", arg: paths, label: "Delete…" }]
+      : []),
     {
       label: "Stage",
       icon: "plus",
@@ -236,6 +245,9 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   if (conflicted.length) items.push({ kind: "action", action: "vcs.resolveConflicts", label: "Resolve Conflicts…" });
   items.push(
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
+    ...(files.length && files.every(isNewFile)
+      ? [{ kind: "action" as const, action: "vcs.delete", arg: paths, label: "Delete…" }]
+      : []),
     ...(untracked.length
       ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
       : []),
@@ -314,18 +326,26 @@ function CheckMark({
 
 /** Inclusion state of every change (user overrides over the change list defaults). */
 function useCommitChecks() {
+  const staging = useWorkflowSettings((s) => s.vcs.git.stagingArea);
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const userChecks = useCommit((s) => s.checks);
   const lists = useChangelists((s) => s.state);
-  return useMemo(() => withListDefaults(status, root, lists, userChecks), [status, root, lists, userChecks]);
+  return useMemo(
+    () => (staging ? withStagedChecks(status) : withListDefaults(status, root, lists, userChecks)),
+    [staging, status, root, lists, userChecks],
+  );
 }
 
 /** Number of changes the commit would include. */
 export function useIncludedCount(): number {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
-  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+  const staging = useWorkflowSettings((s) => s.vcs.git.stagingArea);
+  return useMemo(
+    () => (staging ? stagingPlan(status).included.length : planCommit(status, checks).included.length),
+    [staging, status, checks],
+  );
 }
 
 /** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
@@ -364,9 +384,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const staging = useWorkflowSettings((s) => s.vcs.git.stagingArea);
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos),
-    [status, root, groupByDir, lists, repos],
+    () => buildChangeTree(status, root, groupByDir, staging ? undefined : lists, repos, staging),
+    [status, root, groupByDir, lists, repos, staging],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -406,8 +427,19 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     }
   }, [status]);
 
-  const toggle = useCallback((nodes: ChangeNode[]) => {
+  const toggle = useCallback((clicked: ChangeNode, nodes: ChangeNode[]) => {
     const files = filesOf(nodes);
+    if (!files.length) return;
+    // Staging-area form: the checkbox is the staged state, so toggling runs git add / reset.
+    if (workflowSettings().vcs.git.stagingArea) {
+      const { stage, paths } = stagingToggle(clicked.group, nodes);
+      if (!paths.length) return;
+      void runOp(stage ? "Stage" : "Unstage", async () => {
+        if (stage) await call(commands.vcsStage(paths));
+        else await call(commands.vcsUnstage(paths));
+      }).finally(() => void refreshNow());
+      return;
+    }
     const { status: st, root: r } = useVcs.getState();
     const cur = withListDefaults(st, r ?? "", useChangelists.getState().state, useCommit.getState().checks);
     const agg = aggregateCheck(files, cur);
@@ -418,6 +450,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   }, []);
 
   const selectedNodes = () => [...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+  // Delete applies to new files only: they have no committed state to roll back to.
+  const selectedFiles = filesOf(selectedNodes());
+  const deletable = selectedFiles.length > 0 && selectedFiles.every(isNewFile);
 
   return (
     <div className={styles.changes}>
@@ -425,6 +460,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
         {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
         <IconButton icon="undo" action="vcs.rollback" size="small" />
+        <IconButton icon="trash" action="vcs.delete" size="small" disabled={!deletable} />
         {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
         {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
         <IconButton
@@ -460,13 +496,28 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
             e.stopPropagation();
-            toggle(selectedNodes());
+            const nodes = selectedNodes();
+            const clicked = nodes.every((n) => n.group === "staged")
+              ? nodes[0]
+              : nodes.find((n) => n.group !== "staged" && n.group !== "conflicts");
+            if (clicked) toggle(clicked, nodes);
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
             const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
               void executeAction("vcs.changelist.delete", group.changelist);
+            } else {
+              // New files (unversioned or added) are deleted from disk: nothing to roll back.
+              const files = filesOf(selectedNodes());
+              if (files.length && files.every(isNewFile)) {
+                e.preventDefault();
+                e.stopPropagation();
+                void executeAction(
+                  "vcs.delete",
+                  files.map((f) => f.path),
+                );
+              }
             }
           } else if (e.key === "F4") {
             const n = selectedNodes().find((x) => x.type === "file");
@@ -520,7 +571,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             </span>
           }
           renderNode={(n, st) => {
-            const agg = aggregateCheck(n.files, checks);
+            const agg = staging
+              ? { checked: stagingNodeChecked(n.group), indeterminate: false }
+              : aggregateCheck(n.files, checks);
             const label = (
               <span
                 className={clsx(
@@ -576,7 +629,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     checked={agg.checked}
                     indeterminate={agg.indeterminate}
                     label={tx`Include ${n.label} in commit`}
-                    onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
+                    onToggle={() => toggle(n, selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}
                 {n.type === "group" ? null : (
@@ -588,7 +641,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {label}
                 {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
-                {n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
+                {n.type === "file" && !staging && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>

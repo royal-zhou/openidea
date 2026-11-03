@@ -8,6 +8,7 @@ import { installKeyboardDispatcher } from "./platform/keymap";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
+import { primeLocale } from "./features/app/locale";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -18,6 +19,10 @@ if (import.meta.env.DEV && isTauri()) {
 
 // The native Settings window (`settings-<parent>`) loads this page too.
 const settingsParent = settingsWindowParent();
+
+// Apply the stored language (default: the OS language) before the first render, so a
+// Chinese system does not flash English while settings load.
+await primeLocale();
 
 if (settingsParent !== null) {
   activateSecondaryWindow();

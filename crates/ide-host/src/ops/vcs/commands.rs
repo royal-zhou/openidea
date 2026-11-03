@@ -204,6 +204,21 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
+/// Image at `rev` (`None` = HEAD) as a `data:` URL. `None` when that revision has no such file.
+pub async fn vcs_read_image(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    rev: Option<String>,
+) -> IdeResult<Option<String>> {
+    let project = host.project(window)?;
+    blocking(move || match project.with_repo_of(&path, |r| r.file_bytes_at(&path, rev.as_deref()))? {
+        Some(bytes) => ide_vfs::data_url(&path, &bytes).map(Some),
+        None => Ok(None),
+    })
+    .await
+}
+
 pub async fn vcs_blame(
     host: &Host,
     window: &str,
@@ -939,6 +954,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
+    d.add("vcs_read_image", |c| async move { vcs_read_image(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
     });

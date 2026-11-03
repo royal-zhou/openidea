@@ -34,19 +34,12 @@ interface Lane {
   dashed?: true;
 }
 
-export interface GraphState {
-  lanes: Array<Lane | null>;
-  nextColor: number;
-}
-
 export interface GraphCommit {
   id: string;
   parents: readonly string[];
   /** Per parent: the link skips collapsed commits. */
   dashed?: readonly boolean[];
 }
-
-export const emptyGraphState = (): GraphState => ({ lanes: [], nextColor: 0 });
 
 const firstFree = (lanes: Array<Lane | null>) => {
   const i = lanes.indexOf(null);
@@ -60,18 +53,24 @@ const laneOf = (id: string, color: number, dashed: boolean): Lane =>
   dashed ? { id, color, dashed: true } : { id, color };
 
 /**
- * Lays out `commits` (continuing from `state`, so pages can be appended).
- * Each lane keeps its position while it lives; freed slots are reused.
+ * Lays out `commits` in lanes. Each lane keeps its position while it lives and freed
+ * slots are reused.
+ *
+ * A parent gets a lane only when its row comes later in `commits`: path, author and
+ * text filters leave commits out, and an edge waiting for a row that never comes
+ * would keep growing the graph — every later row one lane further right — until the
+ * subjects are squeezed out of the pane. Edges only connect rows that are shown.
  */
-export function computeGraph(
-  commits: ReadonlyArray<GraphCommit>,
-  state: GraphState = emptyGraphState(),
-): { rows: GraphRow[]; state: GraphState } {
-  const lanes = [...state.lanes];
-  let nextColor = state.nextColor;
+export function computeGraph(commits: ReadonlyArray<GraphCommit>): GraphRow[] {
+  const lanes: Array<Lane | null> = [];
+  let nextColor = 0;
   const rows: GraphRow[] = [];
+  // Where each commit is shown: tells a parent still to come from a filtered-out one.
+  const shownAt = new Map<string, number>();
+  commits.forEach((c, i) => shownAt.set(c.id, i));
 
-  for (const c of commits) {
+  for (let index = 0; index < commits.length; index++) {
+    const c = commits[index]!;
     const matching: number[] = [];
     lanes.forEach((l, i) => {
       if (l?.id === c.id) matching.push(i);
@@ -102,6 +101,7 @@ export function computeGraph(
     });
 
     c.parents.forEach((p, k) => {
+      if ((shownAt.get(p) ?? -1) <= index) return;
       const dashed = !!c.dashed?.[k];
       // The first parent continues this lane even if another lane also leads to it
       // (both lines then converge at the parent's node, like `git log --graph`).
@@ -125,7 +125,15 @@ export function computeGraph(
     const widthAfter = Math.max(0, ...down.map((s) => s.to + 1));
     rows.push({ lane, color, up, down, width: Math.max(widthBefore, widthAfter, lane + 1) });
   }
-  return { rows, state: { lanes, nextColor } };
+  return rows;
+}
+
+/**
+ * Lane count of the whole log: the graph column is as wide as its widest row, so
+ * every subject starts at the same x (rows are not indented by their own lane).
+ */
+export function laneCount(rows: readonly GraphRow[]): number {
+  return rows.reduce((n, r) => Math.max(n, r.width), 0);
 }
 
 /**

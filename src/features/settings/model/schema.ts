@@ -34,7 +34,8 @@ import {
 import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
 
 export type ThemeId = BuiltinThemeId | "system";
-export type LocaleId = "en" | "zh";
+/** `system` follows the OS language (`navigator.language`); it is stored as-is, not resolved. */
+export type LocaleId = "en" | "zh" | "system";
 
 /** A user keymap (Keymap › Duplicate…): its own overrides on top of a bundled preset. */
 export interface CustomKeymapSettings {
@@ -119,7 +120,7 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   general: { reopenLastProject: true, confirmExit: false, ...DEFAULT_GENERAL_EXTRAS },
-  appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
+  appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "system", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
     fontSize: 13,
@@ -171,7 +172,7 @@ export const LIMITS = {
 } as const;
 
 const THEMES: readonly ThemeId[] = [...BUILTIN_THEME_IDS, "system"];
-const LOCALES: readonly LocaleId[] = ["en", "zh"];
+const LOCALES: readonly LocaleId[] = ["system", "en", "zh"];
 export const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 type Obj = Record<string, unknown>;

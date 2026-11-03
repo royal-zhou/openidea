@@ -63,7 +63,23 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    host.project(window)?.lsp.goto(doc, pos, kind).await
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let locs = project.lsp.goto(doc, pos, kind).await?;
+    if locs.is_empty() {
+        return Ok(locs);
+    }
+    // tsserver follows `types` into a workspace package's dist/. Open the
+    // source file, and the defining export when the click named one.
+    host.blocking(move || Ok(rewrite_workspace_targets(&root, locs))).await
+}
+
+fn rewrite_workspace_targets(root: &std::path::Path, locs: Vec<Location>) -> Vec<Location> {
+    let mut seen = std::collections::HashSet::new();
+    locs.into_iter()
+        .map(|loc| ide_workspace::module_refs::prefer_workspace_source(root, loc))
+        .filter(|loc| seen.insert((loc.path.clone(), loc.range.start)))
+        .collect()
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the

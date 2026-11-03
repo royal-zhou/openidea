@@ -1,9 +1,9 @@
 /**
- * Applies settings that no other feature owns: keymap preset + overrides,
- * the Appearance options (UI font, zoom, compact mode… see
- * `appearanceRuntime`) and the document language. (Theme / accent are applied
- * by the workbench, editor options by the editor.) Runs on startup and
- * whenever `useProject.settings` changes.
+ * Applies settings that no other feature owns: keymap preset + overrides and the
+ * Appearance options (UI font, zoom, compact mode… see `appearanceRuntime`).
+ * (Theme / accent are applied by the workbench, editor options by the editor,
+ * the document language by `setLocale`.) Runs on startup and whenever
+ * `useProject.settings` changes.
  *
  * Settings written by any window (e.g. the Settings window) reach every window
  * through `settingsChanged`, which re-reads the effective settings.
@@ -19,8 +19,6 @@ export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.
   applyKeymapSettings(s.keymap, s.keymapOverrides, s.customKeymaps);
 
   applyAppearanceOptions(s, root);
-
-  root.lang = s.appearance.locale === "zh" ? "zh-CN" : "en";
 }
 
 /** Subscribes to settings changes; returns the unsubscribe function. */

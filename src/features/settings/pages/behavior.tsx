@@ -687,6 +687,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Language",
             hint: "Language of menus and dialogs; untranslated text stays in English.",
             options: [
+              { value: "system", label: "Follow system language" },
               { value: "en", label: "English" },
               { value: "zh", label: "简体中文 (Chinese, Simplified)" },
             ],

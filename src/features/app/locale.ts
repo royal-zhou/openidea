@@ -8,15 +8,36 @@ export function localeSetting(settings: Settings | null | undefined): string | u
   return settings?.appearance?.locale;
 }
 
+/** Settings read before the first render; reused by `installLocaleSync` (no second IPC). */
+let primed: Settings | null = null;
+let primedValue: string | undefined;
+
+/**
+ * Applies the stored language (default: follow the OS) before React renders, so a
+ * Chinese system does not flash English first. The workbench renders before
+ * `useProject.settings` is filled, hence the read here.
+ */
+export async function primeLocale(): Promise<void> {
+  if (isTauri()) {
+    try {
+      primed = await commands.settingsGet();
+    } catch {
+      // Unreadable settings: follow the system language.
+    }
+  }
+  primedValue = localeSetting(primed);
+  await setLocale(primedValue ?? "system");
+}
+
 export function installLocaleSync(): () => void {
-  let current: string | undefined;
+  let current = primedValue;
   const apply = (settings: Settings | null | undefined) => {
     const value = localeSetting(settings);
     if (value === undefined || value === current) return;
     current = value;
     void setLocale(value);
   };
-  const initial = useProject.getState().settings;
+  const initial = useProject.getState().settings ?? primed;
   if (initial) apply(initial);
   else if (isTauri()) void commands.settingsGet().then(apply, () => {});
   return useProject.subscribe((s, prev) => {

@@ -8,6 +8,8 @@ import { ContextMenuHost, iconMarkup } from "@/ui";
 
 const probe = vi.fn();
 const openFile = vi.fn();
+const readImage = vi.fn();
+const revImage = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
 
@@ -18,6 +20,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       fsProbe: (path: string) => probe(path),
+      fsReadImage: (path: string) => readImage(path),
+      vcsReadImage: (path: string, rev: string | null) => revImage(path, rev),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] }),
       fsReadText: () => Promise.resolve({ status: "ok", data: working }),
     },
@@ -61,8 +65,12 @@ const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m
 beforeEach(() => {
   probe.mockReset();
   openFile.mockReset();
+  readImage.mockReset();
+  revImage.mockReset();
   texts.HEAD = texts.abc123 = working = "a\n";
   probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
+  readImage.mockResolvedValue({ status: "ok", data: "data:image/png;base64,working" });
+  revImage.mockResolvedValue({ status: "ok", data: "data:image/png;base64,revision" });
 });
 
 describe("Diff toolbar", () => {
@@ -79,6 +87,26 @@ describe("Diff toolbar", () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull());
+  });
+
+  it("previews an image from a commit instead of the binary notice", async () => {
+    probe.mockResolvedValue({ status: "ok", data: { size: 8, binary: true, tooLarge: false } });
+    const imageInput = {
+      ...input,
+      data: {
+        path: "/repo/icon.png",
+        left: { type: "rev", rev: "abc123" },
+        right: { type: "worktree" },
+      },
+    } as EditorInput;
+    render(<DiffEditor input={imageInput} />);
+    const images = await screen.findAllByRole("img", { name: "icon.png" });
+    expect(images).toHaveLength(2);
+    expect(images[0]).toHaveAttribute("src", "data:image/png;base64,revision");
+    expect(images[1]).toHaveAttribute("src", "data:image/png;base64,working");
+    expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull();
+    expect(revImage).toHaveBeenCalledWith("/repo/icon.png", "abc123");
+    expect(readImage).toHaveBeenCalledWith("/repo/icon.png");
   });
 
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {

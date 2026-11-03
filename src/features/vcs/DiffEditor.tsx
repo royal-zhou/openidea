@@ -63,6 +63,7 @@ import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
 import { effectiveKind, stripSlash } from "./model";
+import { diffShowsImage, ImageDiff } from "./ImageDiff";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
 import styles from "./DiffEditor.module.css";
@@ -315,8 +316,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     left.rev === "HEAD" &&
     !left.path &&
     isWorktree(right);
-  const editableA = !binary && !!attached?.a && !attached.a.readOnly;
-  const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+  const showImage = diffShowsImage(path, left, right);
+  const editableA = !binary && !showImage && !!attached?.a && !attached.a.readOnly;
+  const editableB = !binary && !showImage && !!attached?.b && !attached.b.readOnly;
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
   // Read when the views are built; toggling it later goes through `setSync`.
@@ -987,8 +989,8 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         <span className={styles.sep} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
         <span className={styles.count}>
-          {binary && tx("Binary content")}
-          {!ready || binary
+          {binary && !showImage && tx("Binary content")}
+          {!ready || binary || showImage
             ? ""
             : chunkInfo.count === 0
               ? identical
@@ -1052,7 +1054,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           />
         </div>
       )}
-      {binary ? (
+      {showImage ? (
+        <ImageDiff path={path} left={left} right={right} />
+      ) : binary ? (
         <div className={styles.message}>
           <T>Binary files cannot be shown as text</T>
         </div>
@@ -1070,7 +1074,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           opts.highlight === "none" && styles.noHighlight,
           opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
         )}
-        hidden={!!binary || !!error || !ready}
+        hidden={showImage || !!binary || !!error || !ready}
         aria-label={diffTitle(data)}
         role="region"
         onContextMenu={onContextMenu}

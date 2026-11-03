@@ -68,6 +68,10 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// Commit from the index (Staged / Unstaged groups in the Commit window), as in
+    /// IDEA's staging area; off commits from the change-list checkboxes.
+    #[serde(default)]
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
@@ -88,6 +92,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }

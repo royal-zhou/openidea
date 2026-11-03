@@ -70,6 +70,15 @@ export function registerLogPaneActions(): () => void {
       },
     },
     {
+      id: "vcs.log.branches.groupByFolder",
+      title: "Group Branches by Folder",
+      category: "Git Log",
+      icon: "hierarchy",
+      when: VCS,
+      toggled: () => logOptions().branchFolders,
+      run: () => updateLogOptions({ branchFolders: !logOptions().branchFolders }),
+    },
+    {
       id: "vcs.log.collapseLinear",
       title: "Collapse Linear Branches",
       category: "Git Log",

@@ -78,6 +78,15 @@ describe("multi-root Git log", () => {
     expect(graphCommit(child).parents).toEqual([commitKey(parent)]);
   });
 
+  it("draws a filtered log from its graph parents, keeping the real ones", () => {
+    // Show History of a file: `parents` is the real parent (diffed against), `graphParents`
+    // the nearest commit the log shows (the graph links that one).
+    const c = { ...commit("child", 1), parents: ["p"], graphParents: ["pq"] };
+    expect(graphCommit(c).parents).toEqual(["pq"]);
+    expect(graphCommit({ ...c, graphParents: [] }).parents).toEqual(["p"]);
+    expect(graphCommit({ ...c, graphParents: undefined }).parents).toEqual(["p"]);
+  });
+
   it("keeps identical SHAs distinct in selection and file paths", () => {
     const front = { ...commit("same"), repo: "/project/front" };
     const back = { ...commit("same"), repo: "/project/back" };
@@ -112,6 +121,8 @@ describe("multi-root Git log", () => {
     expect(rows).toHaveLength((PAGE + 5) * 2);
     expect(new Set(rows.map(commitKey)).size).toBe(rows.length);
     expect(rows.map((c) => c.timeMs)).toEqual([...rows.map((c) => c.timeMs)].sort((a, b) => b! - a!));
+    // Pages are laid out together, so rows and commits grow in step.
+    expect(useGitLog.getState().rows).toHaveLength(rows.length);
   });
 
   it("filters repositories and keeps history tabs pinned when the selected root changes", async () => {

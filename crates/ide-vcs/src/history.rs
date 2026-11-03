@@ -6,7 +6,7 @@ use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::{IdeError, IdeResult};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Log "Text or hash" filter: the message (substring or regex), or a hash prefix.
 enum TextFilter {
@@ -64,6 +64,14 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
             let rel = r.rel_path(p)?;
             if rel.is_empty() { None } else { Some(rel) }
         }
+        None => None,
+    };
+    // A path-limited log shows only the commits that changed the path: their real parents
+    // are mostly commits it leaves out, so its graph would end after every row. Git's own
+    // rewriting (the one `git log --graph -- <path>` draws) links each row to the nearest
+    // shown ancestors; it is asked for once and kept for the pages of the same history.
+    let rewrites = match path_filter.as_deref() {
+        Some(rel) => Some(rewritten_parents(r, &tips, range, rel, q.first_parent)?),
         None => None,
     };
     let authors: Vec<String> =
@@ -162,10 +170,18 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
         let time_ms = sig.time().map(|t| t.seconds as f64 * 1000.0).unwrap_or(0.0);
         let summary = message.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
         let hex = id.to_string();
+        // A parent the Log leaves out (a detail filter, the page's end) is no row: the graph
+        // drops that edge rather than waiting for a commit that never comes.
+        let graph_parents = rewrites
+            .as_ref()
+            .and_then(|shown| shown.get(&id))
+            .map(|shown| shown.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
         out.push(Commit {
             short_id: hex[..hex.len().min(8)].to_string(),
             id: hex,
             parents: parents.iter().map(ToString::to_string).collect(),
+            graph_parents,
             author: name,
             email,
             time_ms,
@@ -177,6 +193,84 @@ pub(crate) fn log(r: &Repo, q: &LogQuery) -> IdeResult<Vec<Commit>> {
         if out.len() >= limit {
             break;
         }
+    }
+    Ok(out)
+}
+
+/// Commits of a path-limited log, each with its parents rewritten past the commits the
+/// log leaves out (`git rev-list --parents` does the rewriting).
+type ParentRewrites = HashMap<ObjectId, Vec<ObjectId>>;
+
+/// What a path-limited walk's rewriting depends on: the repository, the path, its starting
+/// revisions (or range tokens) and `--first-parent`.
+#[derive(PartialEq, Eq)]
+struct RewriteKey {
+    root: PathBuf,
+    rel: String,
+    revs: Vec<String>,
+    first_parent: bool,
+}
+
+/// The last few rewritten histories. Paging a log asks again for the same walk (git must
+/// traverse the whole history to rewrite it), so the pages after the first stay cheap.
+static REWRITES: std::sync::Mutex<Vec<(RewriteKey, std::sync::Arc<ParentRewrites>)>> =
+    std::sync::Mutex::new(Vec::new());
+/// Histories kept: one per file whose history is open.
+const REWRITES_KEPT: usize = 8;
+/// Longer histories are not kept in memory.
+const REWRITES_KEPT_MAX: usize = 50_000;
+
+/// Parents of the commits a path-limited walk shows, rewritten to the nearest commits it
+/// also shows: the Log's graph then joins the rows of a file's history instead of ending
+/// after each of them.
+fn rewritten_parents(
+    r: &Repo,
+    tips: &[ObjectId],
+    range: Option<&str>,
+    rel: &str,
+    first_parent: bool,
+) -> IdeResult<std::sync::Arc<ParentRewrites>> {
+    let root = r.root();
+    let revs: Vec<String> = match range {
+        Some(range) => range.split_whitespace().map(str::to_string).collect(),
+        None => tips.iter().map(ToString::to_string).collect(),
+    };
+    let key = RewriteKey { root: root.to_path_buf(), rel: rel.to_string(), revs, first_parent };
+    {
+        let cache = REWRITES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, hit)) = cache.iter().find(|(k, _)| *k == key) {
+            return Ok(hit.clone());
+        }
+    }
+    let mut args: Vec<&str> = vec!["rev-list", "--parents"];
+    if first_parent {
+        args.push("--first-parent");
+    }
+    args.push("--end-of-options");
+    for rev in &key.revs {
+        if rev.starts_with('-') {
+            return Err(IdeError::invalid(format!("invalid revision '{rev}'")));
+        }
+        args.push(rev);
+    }
+    args.extend(["--", rel]);
+    let out = crate::cli::run(root, &args, None)?;
+    let rewrites = std::sync::Arc::new(parent_lines(&out.stdout_str())?);
+    if rewrites.len() <= REWRITES_KEPT_MAX {
+        let mut cache = REWRITES.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(0, (key, rewrites.clone()));
+        cache.truncate(REWRITES_KEPT);
+    }
+    Ok(rewrites)
+}
+
+/// `rev-list --parents` output: a commit id per line, then its rewritten parents.
+fn parent_lines(text: &str) -> IdeResult<ParentRewrites> {
+    let mut out = ParentRewrites::new();
+    for line in text.lines() {
+        let mut ids = line.split_whitespace().map(|hex| ObjectId::from_hex(hex.as_bytes()).map_err(gx));
+        let Some(id) = ids.next() else { continue };
+        out.insert(id?, ids.collect::<IdeResult<Vec<ObjectId>>>()?);
     }
     Ok(out)
 }

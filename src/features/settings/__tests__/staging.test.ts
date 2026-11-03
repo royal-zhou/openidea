@@ -274,7 +274,13 @@ describe("validateSettings", () => {
       keymapOverrides: { "file.save": ["Ctrl+S", 1], bad: "Meta+S" },
       general: null,
     });
-    expect(v.appearance).toMatchObject({ theme: "light", accent: "#3871e1", uiFontSize: 18, locale: "en", zoom: 100 });
+    expect(v.appearance).toMatchObject({
+      theme: "light",
+      accent: "#3871e1",
+      uiFontSize: 18,
+      locale: "system",
+      zoom: 100,
+    });
     expect(v.editor).toMatchObject({
       fontSize: 13,
       tabSize: 3,

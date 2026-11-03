@@ -49,6 +49,7 @@ import { refreshNow, repoName } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
+import { deleteCandidates, showDeleteFilesDialog } from "./changeOps";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -476,6 +477,19 @@ export function registerVcsActions(): () => void {
       keywords: ["ignore", "unversioned", "exclude"],
       run: ({ arg }) => addToIgnore(contextPaths(arg), destination),
     })),
+    {
+      id: "vcs.delete",
+      title: "Delete…",
+      category: "Git",
+      icon: "trash",
+      when: VCS,
+      keywords: ["remove", "unversioned", "untracked", "new file"],
+      run: ({ arg }) => {
+        const explicit = argPaths(arg);
+        const paths = explicit?.length ? explicit : commitWindowFocused() ? useCommit.getState().selection : [];
+        showDeleteFilesDialog(deleteCandidates(paths));
+      },
+    },
     {
       id: "vcs.addToVcs",
       title: "Add to VCS",

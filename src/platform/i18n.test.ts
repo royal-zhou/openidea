@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   _resetI18nForTests,
+  documentLanguage,
   formatMessage,
   isValidMessage,
   keysWithPrefix,
@@ -70,9 +71,24 @@ describe("t / locales", () => {
   it("resolves locale tags", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
+    expect(resolveLocale("zh-Hant")).toBe("zh");
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
+  });
+
+  it("follows the system language for system / auto / empty values", () => {
+    const system = resolveLocale(undefined);
+    expect(resolveLocale("system")).toBe(system);
+    expect(resolveLocale("auto")).toBe(system);
+    expect(resolveLocale("")).toBe(system);
+  });
+
+  it("keeps the document language in BCP 47 form", async () => {
+    expect(documentLanguage("zh")).toBe("zh-CN");
+    expect(documentLanguage("en")).toBe("en");
+    await setLocale("zh");
+    expect(document.documentElement.lang).toBe("zh-CN");
   });
 
   it("translates with English fallback, then the key itself", async () => {

@@ -291,6 +291,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_branch_info"
             | "vcs_line_hunks"
             | "vcs_file_at"
+            | "vcs_read_image"
             | "vcs_blame"
             | "vcs_log"
             | "vcs_commit_files"

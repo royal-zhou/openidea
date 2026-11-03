@@ -5,10 +5,15 @@ import { call, commands } from "@/platform/ipc";
 export type RepoCommit = Commit & { repo?: string | null; user?: string | null; remoteNames?: string[] };
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;
 export const commitKey = (c: Pick<RepoCommit, "id" | "repo">): string => (c.repo ? `${c.repo}\0${c.id}` : c.id);
+/**
+ * The commit as the Log's graph sees it: a filtered log (Show History of a file) carries
+ * parents rewritten to the commits it also shows, while `parents` stays the real ones
+ * (diffs and operations use those).
+ */
 export const graphCommit = (c: Commit): Commit => ({
   ...c,
   id: commitKey(c),
-  parents: c.parents.map((id) => commitKey({ ...c, id })),
+  parents: (c.graphParents?.length ? c.graphParents : c.parents).map((id) => commitKey({ ...c, id })),
 });
 
 /** Merge ordered streams without breaking any repository's topological order. */

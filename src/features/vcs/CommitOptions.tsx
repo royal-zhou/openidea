@@ -24,6 +24,17 @@ async function setCheck(key: CommitCheck, value: boolean) {
   }
 }
 
+/** Toggles a Settings › Version Control › Git flag, e.g. the staging area. */
+async function setGitFlag(key: string, value: boolean) {
+  if (!isTauri()) return;
+  try {
+    await call(commands.settingsSet("global", `vcs.git.${key}`, JSON.stringify(value)));
+    await loadSettings();
+  } catch {
+    // keep the previous value
+  }
+}
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className={styles.optSection}>
@@ -70,6 +81,11 @@ export function CommitOptionsBody() {
           />
         </label>
         <Checkbox checked={signOff} onChange={(v) => useCommit.setState({ signOff: v })} label="Sign-off commit" />
+        <Checkbox
+          checked={useWorkflowSettings((s) => s.vcs.git.stagingArea)}
+          onChange={(v) => void setGitFlag("stagingArea", v)}
+          label="Enable staging area"
+        />
       </Section>
       <Section title="Commit Checks">
         {check("reformat", "Reformat code")}

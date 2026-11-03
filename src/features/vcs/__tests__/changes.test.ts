@@ -8,7 +8,11 @@ import {
   initialCheck,
   hunkIncluded,
   planCommit,
+  stagingNodeChecked,
+  stagingPlan,
+  stagingToggle,
   toggledHunk,
+  withStagedChecks,
   type CheckState,
   type ChangeNode,
 } from "../changes";
@@ -63,6 +67,78 @@ describe("buildChangeTree", () => {
       "  README.md",
     ]);
     expect(changes.children![0]!.files).toHaveLength(3);
+  });
+});
+
+describe("staging area", () => {
+  const shape = (nodes: ChangeNode[]): string[] =>
+    nodes.flatMap((n) => [n.label, ...(n.children ?? []).map((c) => `  ${c.label}`)]);
+
+  it("splits the tree into staged and unstaged groups", () => {
+    expect(shape(buildChangeTree(status, "/r", false, undefined, [], true))).toEqual([
+      "Merge Conflicts",
+      "  conf.yml",
+      "Staged",
+      "  AppTest.kt",
+      "  Partial.kt",
+      "  README.md",
+      "Unstaged",
+      "  App.kt",
+      "  Partial.kt",
+      "Unversioned Files",
+      "  notes.txt",
+    ]);
+  });
+
+  it("gives a partially staged file a row in each group", () => {
+    const roots = buildChangeTree(status, "/r", false, undefined, [], true);
+    const [staged, unstaged] = [roots[1]!, roots[2]!];
+    expect(staged.files.map((f) => f.relPath)).toContain("src/main/kotlin/Partial.kt");
+    expect(unstaged.files.map((f) => f.relPath)).toContain("src/main/kotlin/Partial.kt");
+    // Separate rows: the two entries must not share a key.
+    const keys = roots.flatMap((g) => (g.children ?? []).map((c) => c.key));
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("commits exactly the index, and the checkbox mirrors the staged state", () => {
+    const plan = stagingPlan(status);
+    expect(plan.stage).toEqual([]);
+    expect(plan.unstage).toEqual([]);
+    expect(plan.included.map((f) => f.relPath).sort()).toEqual([
+      "README.md",
+      "src/main/kotlin/Partial.kt",
+      "src/test/AppTest.kt",
+    ]);
+    const checks = withStagedChecks(status);
+    expect(checks.get("/r/notes.txt")).toBe("none");
+    expect(checks.get("/r/src/main/kotlin/App.kt")).toBe("none");
+    expect(checks.get("/r/README.md")).toBe("all");
+    expect(checks.get("/r/src/main/kotlin/Partial.kt")).toBe("all");
+    // The two rows of a partial file do not share a checkbox: only the staged group is on.
+    expect(stagingNodeChecked("staged")).toBe(true);
+    expect(stagingNodeChecked("unstaged")).toBe(false);
+    expect(stagingNodeChecked("unversioned")).toBe(false);
+    expect(stagingNodeChecked("conflicts")).toBe(false);
+  });
+
+  it("stages or unstages only the group whose checkbox was clicked", () => {
+    const roots = buildChangeTree(status, "/r", false, undefined, [], true);
+    const staged = roots.find((n) => n.group === "staged")!;
+    const unstaged = roots.find((n) => n.group === "unstaged")!;
+    const partialStaged = staged.children!.find((n) => n.label === "Partial.kt")!;
+    const partialUnstaged = unstaged.children!.find((n) => n.label === "Partial.kt")!;
+    expect(stagingToggle("unstaged", [partialUnstaged])).toEqual({
+      stage: true,
+      paths: ["/r/src/main/kotlin/Partial.kt"],
+    });
+    expect(stagingToggle("staged", [partialStaged])).toEqual({
+      stage: false,
+      paths: ["/r/src/main/kotlin/Partial.kt"],
+    });
+    // A mixed selection follows the clicked group, not every selected row.
+    expect(stagingToggle("staged", [partialStaged, partialUnstaged]).stage).toBe(false);
+    expect(stagingToggle("staged", [partialStaged, partialUnstaged]).paths).toEqual(["/r/src/main/kotlin/Partial.kt"]);
+    expect(stagingToggle("conflicts", [roots[0]!])).toEqual({ stage: false, paths: [] });
   });
 });
 

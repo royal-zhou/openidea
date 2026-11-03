@@ -20,6 +20,8 @@ parking_lot.workspace = true
 blake3.workspace = true
 tracing.workspace = true
 globset.workspace = true
+tree-sitter.workspace = true
+tree-sitter-typescript = "0.23.2"
 
 [dev-dependencies]
 tempfile.workspace = true

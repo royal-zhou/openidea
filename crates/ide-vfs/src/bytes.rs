@@ -97,12 +97,27 @@ pub fn image_mime(path: &Path) -> Option<&'static str> {
     })
 }
 
-/// The whole image as a `data:` URL (allowed by the webview's CSP, unlike file URLs).
-pub fn read_data_url(path: &Path) -> IdeResult<String> {
+/// `bytes` as a `data:` URL, using `path`'s extension for the MIME type.
+pub fn data_url(path: &Path, bytes: &[u8]) -> IdeResult<String> {
     let mime =
         image_mime(path).ok_or_else(|| IdeError::invalid(format!("{} is not a supported image", path.display())))?;
+    if bytes.len() as u64 > MAX_IMAGE_SIZE {
+        return Err(IdeError::invalid(format!(
+            "{} is too large to preview ({} MiB)",
+            path.display(),
+            bytes.len() as u64 / (1024 * 1024)
+        )));
+    }
+    Ok(format!("data:{mime};base64,{}", base64(bytes)))
+}
+
+/// The whole image as a `data:` URL (allowed by the webview's CSP, unlike file URLs).
+pub fn read_data_url(path: &Path) -> IdeResult<String> {
+    if image_mime(path).is_none() {
+        return Err(IdeError::invalid(format!("{} is not a supported image", path.display())));
+    }
     if let Some(bytes) = archive_bytes(path, MAX_IMAGE_SIZE)? {
-        return Ok(format!("data:{mime};base64,{}", base64(&bytes)));
+        return data_url(path, &bytes);
     }
     let meta = fs::metadata(path)?;
     if meta.len() > MAX_IMAGE_SIZE {
@@ -112,8 +127,7 @@ pub fn read_data_url(path: &Path) -> IdeResult<String> {
             meta.len() / (1024 * 1024)
         )));
     }
-    let bytes = fs::read(path)?;
-    Ok(format!("data:{mime};base64,{}", base64(&bytes)))
+    data_url(path, &fs::read(path)?)
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

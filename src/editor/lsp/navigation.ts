@@ -16,6 +16,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import {
+  call,
   commands,
   isCancelled,
   type GotoKind,
@@ -49,7 +50,15 @@ import {
 import { showHint, showPendingHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
-import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
+import {
+  documentLinks,
+  followReference,
+  knownLinks,
+  linkReference,
+  moduleReferenceAt,
+  referenceAt,
+  textReference,
+} from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
@@ -264,6 +273,30 @@ async function gotoWebReference(view: EditorView, doc: EditorDocContext, pos: Po
 
 /** Follows the link, URL or file path at `offset`; false when there is none. */
 async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<boolean> {
+  const module = moduleReferenceAt(view.state.doc, offset, doc.language);
+  if (module && !doc.virtual) {
+    const targets = await call(commands.fsResolveModule(doc.path, module.specifier)).catch(() => []);
+    if (!targets.length) {
+      showHint(view, `Cannot resolve module '${module.specifier}'`, { tone: "error" });
+      return true;
+    }
+    const locations: DeclarationTarget[] = targets.map((target) => ({
+      path: target.path,
+      range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } },
+      uri: null,
+    }));
+    if (locations.length === 1) {
+      await navigateTo(locations[0]!);
+    } else {
+      openPopup({
+        kind: "list",
+        anchor: caretAnchor(view, offset),
+        title: chooserTitle("definition", module.specifier, locations.length),
+        items: await locationItems(locations),
+      });
+    }
+    return true;
+  }
   const ref = await referenceAt(view, doc, offset);
   if (!ref) return false;
   try {
@@ -334,7 +367,11 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const pos = view.posAtCoords({ x, y }, false);
   if (pos == null) return null;
   const links = knownLinks(view);
-  const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
+  const doc = docOf(view);
+  const ref =
+    (links && linkReference(view.state.doc, links, pos)) ??
+    (doc && moduleReferenceAt(view.state.doc, pos, doc.language)) ??
+    textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
   const word = view.state.wordAt(pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;
@@ -354,6 +391,13 @@ async function probeNavigation(view: EditorView, offset: number): Promise<{ info
     } catch (e) {
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
+    }
+    if (!navigable) {
+      const module = moduleReferenceAt(view.state.doc, offset, doc.language);
+      if (module) {
+        const targets = await call(commands.fsResolveModule(doc.path, module.specifier)).catch(() => []);
+        navigable = targets.length > 0;
+      }
     }
     if (!navigable && WEB_LANGUAGES.has(doc.language) && !doc.virtual)
       navigable = !!(await lspRequest(() => commands.webGoto(doc.doc, pos)).catch(() => null))?.targets.length;

@@ -312,13 +312,28 @@ export interface BranchTreeNode {
  * Git Log Branches pane: HEAD, Local, Remote › <remote> and Tags. Names with `/` are
  * grouped into folders (`feat/x` → feat › x); at each level the current branch and
  * favorites come first, then folders, then the other branches. Tags: newest version first.
+ * `flat` lists the refs as they are (no folders, full names), for narrow panes or names
+ * that are long enough that a folder path would only truncate them.
  */
 export function buildBranchTree(
   branches: readonly Branch[],
   favorites: readonly string[] | null,
   tags: readonly string[] = [],
+  flat = false,
 ): BranchTreeNode[] {
+  const byName = (a: BranchTreeNode, b: BranchTreeNode) => a.label.localeCompare(b.label);
+  // IDEA: current branch, favorites, then the rest.
+  const rank = (n: BranchTreeNode) => (n.branch?.current ? 0 : n.favorite ? 1 : 2);
+  const leaf = (b: Branch, label: string): BranchTreeNode => ({
+    key: `b:${b.name}`,
+    label,
+    kind: "branch",
+    ref: b.name,
+    branch: b,
+    favorite: isFavoriteBranch(b, favorites),
+  });
   const level = (list: { b: Branch; rest: string }[], keyPrefix: string): BranchTreeNode[] => {
+    if (flat) return list.map((item) => leaf(item.b, item.b.name)).sort((a, b) => rank(a) - rank(b) || byName(a, b));
     const folders = new Map<string, { b: Branch; rest: string }[]>();
     const leaves: BranchTreeNode[] = [];
     for (const item of list) {
@@ -327,25 +342,15 @@ export function buildBranchTree(
         const seg = item.rest.slice(0, i);
         folders.set(seg, [...(folders.get(seg) ?? []), { b: item.b, rest: item.rest.slice(i + 1) }]);
       } else {
-        leaves.push({
-          key: `b:${item.b.name}`,
-          label: item.rest,
-          kind: "branch",
-          ref: item.b.name,
-          branch: item.b,
-          favorite: isFavoriteBranch(item.b, favorites),
-        });
+        leaves.push(leaf(item.b, item.rest));
       }
     }
-    const byName = (a: BranchTreeNode, b: BranchTreeNode) => a.label.localeCompare(b.label);
     const folderNodes = [...folders]
       .map(([seg, items]): BranchTreeNode => {
         const key = `${keyPrefix}/${seg}`;
         return { key, label: seg, kind: "folder", ref: null, children: level(items, key) };
       })
       .sort(byName);
-    // IDEA: current branch, favorites, folders, the rest.
-    const rank = (n: BranchTreeNode) => (n.branch?.current ? 0 : n.favorite ? 1 : 2);
     const top = leaves.filter((n) => rank(n) < 2).sort((a, b) => rank(a) - rank(b) || byName(a, b));
     return [...top, ...folderNodes, ...leaves.filter((n) => rank(n) === 2).sort(byName)];
   };
@@ -403,6 +408,7 @@ export function buildBranchTree(
 export function buildRepositoryBranchTree(
   repositories: readonly { root: string; name: string; branches: Branch[]; tags: string[] }[],
   favorites: readonly string[] | null,
+  flat = false,
 ): BranchTreeNode[] {
   const scope = (nodes: BranchTreeNode[], repo: string): BranchTreeNode[] =>
     nodes.map((n) => ({
@@ -411,7 +417,7 @@ export function buildRepositoryBranchTree(
       key: `${repo}:${n.key}`,
       children: n.children && scope(n.children, repo),
     }));
-  const trees = repositories.map((r) => ({ ...r, nodes: buildBranchTree(r.branches, favorites, r.tags) }));
+  const trees = repositories.map((r) => ({ ...r, nodes: buildBranchTree(r.branches, favorites, r.tags, flat) }));
   const groups = [
     { key: "g:local", label: "Local" },
     { key: "g:remote", label: "Remote" },

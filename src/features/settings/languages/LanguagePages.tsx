@@ -5,7 +5,7 @@
  */
 import { useId, useMemo } from "react";
 import { IconButton, Input, type SelectOption } from "@/ui";
-import { Row, Section, Select, Toggle } from "../components/Form";
+import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
@@ -358,6 +358,7 @@ export function MavenPage() {
 
 export function TypeScriptPage() {
   const [version, setVersion] = useSetting<string>("languages.typescript.version");
+  const [aliases, setAliases] = useSetting<string[]>("languages.typescript.pathAliases");
   const { list } = useDetected("typeScript");
   const workspace = list.find((s) => s.source === "workspace");
   const options = useMemo<SelectOption[]>(() => {
@@ -392,6 +393,14 @@ export function TypeScriptPage() {
               }}
             />
           </span>
+        </Row>
+      </Section>
+      <Section>
+        <Row
+          label="Path aliases"
+          hint="Fallback when tsconfig paths or vite aliases are dynamic: one prefix=target per line, target relative to the project root."
+        >
+          <GlobListEditor value={aliases} onChange={setAliases} placeholder="@=src" aria-label="Path aliases" />
         </Row>
       </Section>
     </div>

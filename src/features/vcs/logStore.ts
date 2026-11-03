@@ -4,7 +4,7 @@ import { create } from "zustand";
 import type { Branch, BranchInfo, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { collapseLinear, computeGraph, emptyGraphState, type GraphRow, type GraphState } from "./graph";
+import { collapseLinear, computeGraph, type GraphRow } from "./graph";
 import { logOptions, setLogOptions, type LogOptions } from "./logOptions";
 import { clearConsole, errorMessage } from "./ops";
 import { currentRepo, currentRepoRoot, repoName, repoOf, useVcs } from "./store";
@@ -38,7 +38,6 @@ interface LogState {
   filters: LogFilters;
   commits: RepoCommit[];
   rows: GraphRow[];
-  graph: GraphState;
   loading: boolean;
   done: boolean;
   error: string | null;
@@ -131,7 +130,6 @@ const initialLog = (): Omit<LogState, "generation"> => ({
   filters: emptyFilters(),
   commits: [],
   rows: [],
-  graph: emptyGraphState(),
   loading: false,
   done: false,
   error: null,
@@ -216,21 +214,21 @@ let loadPromise: Promise<void> | null = null;
 /** What a log tab shows: the store fields swapped in and out when another log tab is selected. */
 type LogView = Pick<
   LogState,
-  "filters" | "commits" | "rows" | "graph" | "loading" | "done" | "error" | "selected" | "selection" | "revealTick"
+  "filters" | "commits" | "rows" | "loading" | "done" | "error" | "selected" | "selection" | "revealTick"
 >;
 
 function freshView(filters: LogFilters): LogView {
-  const { commits, rows, graph, loading, done, error, selected, selection, revealTick } = initialLog();
-  return { filters, commits, rows, graph, loading, done, error, selected, selection, revealTick };
+  const { commits, rows, loading, done, error, selected, selection, revealTick } = initialLog();
+  return { filters, commits, rows, loading, done, error, selected, selection, revealTick };
 }
 
 /** Views of the log tabs not shown now. */
 const parked = new Map<string, LogView>();
 
 function currentView(): LogView {
-  const { filters, commits, rows, graph, done, error, selected, selection, revealTick } = useGitLog.getState();
+  const { filters, commits, rows, done, error, selected, selection, revealTick } = useGitLog.getState();
   // A page still loading is dropped (the generation changes): loaded again when shown.
-  return { filters, commits, rows, graph, loading: false, done, error, selected, selection, revealTick };
+  return { filters, commits, rows, loading: false, done, error, selected, selection, revealTick };
 }
 
 export const isLogTab = (id: string, tabs: readonly LogTab[] = useGitLog.getState().logTabs) =>
@@ -318,7 +316,7 @@ export function setLogFilters(patch: Partial<LogFilters>) {
 /** Reloads history, optionally keeping the current view until its replacement arrives. */
 export function reloadLog({ preserve = false }: { preserve?: boolean } = {}): Promise<void> {
   useGitLog.setState((s) => ({
-    ...(preserve ? {} : { commits: [], rows: [], graph: emptyGraphState(), done: false }),
+    ...(preserve ? {} : { commits: [], rows: [], done: false }),
     loading: true,
     error: null,
     generation: s.generation + 1,
@@ -459,11 +457,14 @@ function loadPage(replace: boolean): Promise<void> {
         useGitLog.setState({ error: failures.join("\n") });
         return;
       }
-      const { rows, state } = computeGraph(page.map(graphCommit), replace ? emptyGraphState() : cur.graph);
+      const commits = replace ? page : cur.commits.concat(page);
+      // Laid out over every loaded row: a lane lives only as long as the commit it
+      // leads to is in the log (filters leave commits out), so pages are laid out
+      // again as a whole rather than appended lane by lane.
+      const rows = computeGraph(commits.map(graphCommit));
       useGitLog.setState({
-        commits: replace ? page : cur.commits.concat(page),
-        rows: replace ? rows : cur.rows.concat(rows),
-        graph: state,
+        commits,
+        rows,
         done: page.length < limit || loaded + page.length >= cap,
         error: failures.join("\n") || null,
       });

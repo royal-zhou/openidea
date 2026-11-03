@@ -273,8 +273,6 @@ const Row = memo(function Row({
   const isEditing =
     !!editing && (node.placeholder ? editing.kind === "new" : editing.kind === "rename" && editing.key === node.key);
   const faded = node.ignored || deco.faded;
-  // IDEA dims the icon of excluded folders only; git-ignored ones just get the ignored colour.
-  const dimIcon = node.excluded;
   return (
     <span
       className={clsx(styles.content, cut && styles.cut, dropTarget && styles.dropTarget)}
@@ -287,11 +285,7 @@ const Row = memo(function Row({
       onPointerDown={(e) => onPointerDown(node, e)}
     >
       <span className={styles.iconStack}>
-        <Icon
-          name={icon}
-          size={16}
-          className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
-        />
+        <Icon name={icon} size={16} className={clsx(styles.icon, node.dir && styles.folderIcon)} />
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
           <Icon name="runnable-mark" size={16} className={styles.runnable} />
         )}
@@ -767,7 +761,6 @@ export function ProjectView() {
         isExpandable={isExpandable}
         loadChildren={loadChildren}
         renderNode={renderNode}
-        rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

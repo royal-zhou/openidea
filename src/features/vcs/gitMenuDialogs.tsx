@@ -4,6 +4,7 @@ import clsx from "clsx";
 import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { Checkbox, Dialog, IconButton, Input, Select, T, type SelectOption } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
@@ -11,6 +12,7 @@ import { conflictActions, openConflictsInstead, validateBranchName } from "./bra
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { sameWorktreePath, switchToWorktree, WorktreeFiles } from "./worktreeFiles";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -563,7 +565,7 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
       width={620}
       buttons={[{ label: "Close", role: "default", autoFocus: true, onClick: onClose }]}
     >
-      <WorktreesPanel className={styles.form} />
+      <WorktreesPanel className={styles.form} onSwitched={onClose} />
     </Dialog>
   );
 }
@@ -573,9 +575,19 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
  * dialog's content and the Git tool window's Worktrees tab. `listClassName` replaces
  * the dialog's bordered list box.
  */
-export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+export function WorktreesPanel({
+  className,
+  listClassName,
+  onSwitched,
+}: {
+  className?: string;
+  listClassName?: string;
+  /** Closes the host dialog after this window switches to the worktree. */
+  onSwitched?: () => void;
+}) {
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
+  const projectRoot = useProject((s) => s.project?.root);
   const [list, setList] = useState<Worktree[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -584,12 +596,31 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       .then((l) => {
         setList(l);
         setError(null);
+        setSelected(
+          (cur) =>
+            cur ??
+            l.find((w) => sameWorktreePath(useProject.getState().project?.root, w.path))?.path ??
+            l[0]?.path ??
+            null,
+        );
       })
       .catch((e) => setError(errorMessage(e)));
   useEffect(() => {
     void reload();
   }, [repo]);
   const current = list.find((w) => w.path === selected);
+  const here = (path: string) => sameWorktreePath(projectRoot, path);
+
+  const switchTo = async (path: string) => {
+    try {
+      const result = await switchToWorktree(path);
+      if (result !== "cancelled") onSwitched?.();
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      notifications().notify({ group: "vcs", level: "error", title: "Cannot switch worktree", body: message });
+    }
+  };
 
   const remove = async () => {
     if (!current || current.main) return;
@@ -642,6 +673,13 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           onClick={() => void remove()}
         />
         <IconButton
+          icon="arrow-right"
+          title="Switch to Worktree"
+          size="small"
+          disabled={!current || here(current.path)}
+          onClick={() => current && void switchTo(current.path)}
+        />
+        <IconButton
           icon="folder"
           title="Open in New Window"
           size="small"
@@ -658,16 +696,19 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             aria-selected={w.path === selected}
             className={clsx(styles.manageRow, w.path === selected && styles.manageRowSelected)}
             onClick={() => setSelected(w.path)}
-            onDoubleClick={() => void executeAction("file.openProjectPath", w.path)}
+            onDoubleClick={() => void switchTo(w.path)}
           >
             <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
             <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
-            {(w.main || w.locked || w.prunable) && (
-              <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>
+            {(here(w.path) || w.main || w.locked || w.prunable) && (
+              <span className={styles.fileDir}>
+                {here(w.path) ? tx("Current") : w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}
+              </span>
             )}
           </button>
         ))}
       </div>
+      {selected && <WorktreeFiles key={selected} root={selected} />}
       {error && <div className={styles.error}>{error}</div>}
     </div>
   );

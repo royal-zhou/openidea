@@ -57,10 +57,18 @@ export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messag
 /** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
-  if (!tag || tag === "system" || tag === "auto")
-    tag = typeof navigator !== "undefined" ? (navigator.language ?? DEFAULT_LOCALE) : DEFAULT_LOCALE;
+  if (!tag || tag === "system" || tag === "auto") {
+    // `navigator.languages` is ordered by preference and is what the OS reports.
+    const preferred = typeof navigator !== "undefined" ? navigator.languages?.[0] : undefined;
+    tag = preferred ?? (typeof navigator !== "undefined" ? (navigator.language ?? DEFAULT_LOCALE) : DEFAULT_LOCALE);
+  }
   const base = tag.toLowerCase().split(/[-_]/)[0] ?? "";
   return (SUPPORTED_LOCALES as readonly string[]).includes(base) ? (base as Locale) : DEFAULT_LOCALE;
+}
+
+/** The `document.documentElement.lang` value of a resolved locale. */
+export function documentLanguage(locale: Locale): string {
+  return locale === "zh" ? "zh-CN" : "en";
 }
 
 let fallbackCache: Catalog | null = null;
@@ -106,7 +114,7 @@ export async function setLocale(input: string | null | undefined): Promise<Local
   }
   if (token === switchToken) {
     useI18n.setState({ locale, messages: merged(locale), texts: textCatalogs.get(locale) ?? {} });
-    if (typeof document !== "undefined") document.documentElement.lang = locale;
+    if (typeof document !== "undefined") document.documentElement.lang = documentLanguage(locale);
   }
   return locale;
 }

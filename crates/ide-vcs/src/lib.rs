@@ -83,6 +83,11 @@ pub struct Commit {
     pub id: String,
     pub short_id: String,
     pub parents: Vec<String>,
+    /// Graph edges of a filtered log (Show History of a file): parents rewritten past the
+    /// commits the log leaves out, as git's own `--graph` does. Empty = use `parents`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub graph_parents: Vec<String>,
     pub author: String,
     pub email: String,
     pub time_ms: f64,

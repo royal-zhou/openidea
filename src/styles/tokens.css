@@ -208,11 +208,16 @@ html {
   --terminal-ansi-bright-cyan: #40ffe9;
   --terminal-ansi-bright-white: #ffffff;
 
-  /* typography (Inter 13 UI, JetBrains Mono 13 editor) */
-  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  /* typography (Inter 13 UI, JetBrains Mono 13 editor); CJK falls back to the OS face */
+  --font-ui:
+    "Inter Variable", Inter, system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  /* JetBrains Mono has no CJK glyphs; name the usual OS faces before the generic fallback. */
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", monospace;
   --fs-ui: 13px;
   --fs-small: 12px;
   --fs-tiny: 11px;

@@ -23,9 +23,6 @@
 .folderIcon {
   color: var(--fg-subtle);
 }
-.faded {
-  opacity: 0.55;
-}
 
 .label {
   min-width: 0;
@@ -40,12 +37,9 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
-/* IDEA's "excluded" look: ignored / excluded entries are dimmed. */
+/* IDEA: ignored / excluded names use the ignored colour. No row wash — that reads as a selection and blends into the excluded-folder icon. */
 .excluded {
   color: var(--vcs-ignored);
-}
-.excludedRow {
-  background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
 }
 .error {
   text-decoration: underline wavy var(--danger);

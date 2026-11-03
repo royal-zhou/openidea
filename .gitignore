@@ -36,3 +36,7 @@ CLAUDE.md
 
 # Local reference screenshots
 pycharm-screenshots/
+
+# Local package store and scratch dir
+.pnpm-store/
+.tmp/

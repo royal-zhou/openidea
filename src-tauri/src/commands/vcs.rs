@@ -50,6 +50,18 @@ pub async fn vcs_file_at(
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
 }
 
+/// Image at `rev` as a `data:` URL. `None` when that revision has no such file.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_read_image(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    rev: Option<String>,
+) -> IdeResult<Option<String>> {
+    ide_host::ops::vcs::vcs_read_image(&state.host, window.label(), path, rev).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_blame(

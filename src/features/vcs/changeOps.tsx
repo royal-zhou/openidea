@@ -4,7 +4,7 @@ import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
+import { commitRepos, groupOf, planCommit, renamedFromPath, stagingPlan } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
@@ -36,13 +36,19 @@ export async function commitChanges(): Promise<string | undefined> {
   await saveAll();
   await refreshNow();
   const status = useVcs.getState().status;
-  const checks = withListDefaults(
-    status,
-    useVcs.getState().root ?? "",
-    useChangelists.getState().state,
-    useCommit.getState().checks,
-  );
-  const plan = planCommit(status, checks);
+  const staging = workflowSettings().vcs.git.stagingArea;
+  // Staging-area form: the index is what commits; the checkboxes only stage and unstage.
+  const plan = staging
+    ? stagingPlan(status)
+    : planCommit(
+        status,
+        withListDefaults(
+          status,
+          useVcs.getState().root ?? "",
+          useChangelists.getState().state,
+          useCommit.getState().checks,
+        ),
+      );
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
@@ -185,6 +191,117 @@ export function showRollbackDialog(files: FileStatus[]) {
     return;
   }
   openDialog((close) => <RollbackDialog files={files} onClose={close} />);
+}
+
+/** Files deleted per round trip: a large unversioned folder is removed quickly either way. */
+const DELETE_BATCH = 32;
+/** Files listed one by one in the dialog; a bulk selection is only summarised. */
+const DELETE_LISTED = 100;
+
+/** New files (unversioned, or added to the index): nothing committed exists to roll back to. */
+export function isNewFile(f: Pick<FileStatus, "staged" | "unstaged">): boolean {
+  const kind = effectiveKind(f);
+  return kind === "untracked" || kind === "added";
+}
+
+/** The new files among `paths`, in status order: Delete applies to these only. */
+export function deleteCandidates(
+  paths: readonly string[],
+  status: readonly FileStatus[] = useVcs.getState().status,
+): FileStatus[] {
+  if (!paths.length) return [];
+  const wanted = new Set(paths.map(stripSlash));
+  return status.filter((f) => wanted.has(stripSlash(f.path)) && isNewFile(f));
+}
+
+/**
+ * Deletes the new files among `paths` from disk. A file added to the index is unstaged
+ * first, so the deletion is not left behind as a staged change. Returns the count.
+ */
+export async function deleteNewFiles(paths: readonly string[]): Promise<number> {
+  const files = deleteCandidates(paths);
+  if (!files.length) return 0;
+  const all = files.map((f) => stripSlash(f.path));
+  const staged = files.filter((f) => f.staged).map((f) => stripSlash(f.path));
+  try {
+    await saveAll();
+    await runOp("Delete", async () => {
+      if (staged.length) await call(commands.vcsUnstage(staged));
+      // Unversioned folders can hold thousands of files: delete a batch at a time.
+      for (let i = 0; i < all.length; i += DELETE_BATCH)
+        await Promise.all(all.slice(i, i + DELETE_BATCH).map((path) => call(commands.fsDelete(path))));
+    });
+  } finally {
+    await refreshNow();
+  }
+  return all.length;
+}
+
+/** Confirms and deletes new files: the change tree offers Delete for them instead of Rollback. */
+export function showDeleteFilesDialog(files: readonly FileStatus[]) {
+  if (!files.length) {
+    notifications().notify({ group: "vcs", level: "info", title: "Only new files can be deleted here" });
+    return;
+  }
+  openDialog((close) => <DeleteFilesDialog files={files} onClose={close} />);
+}
+
+function DeleteFilesDialog({ files, onClose }: { files: readonly FileStatus[]; onClose: () => void }) {
+  const root = useVcs((s) => s.root) ?? "";
+  const [selected, setSelected] = useState(() => new Set(files.map((f) => stripSlash(f.path))));
+  const run = async () => {
+    const chosen = files.filter((f) => selected.has(stripSlash(f.path))).map((f) => f.path);
+    onClose();
+    if (chosen.length) await deleteNewFiles(chosen);
+  };
+  return (
+    <Dialog
+      open
+      title="Delete Files"
+      onClose={onClose}
+      width={520}
+      buttons={[
+        { label: "Delete", role: "default", autoFocus: true, disabled: !selected.size, onClick: () => void run() },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={styles.section}>
+        {files.length === 1
+          ? tx`${selected.size} of ${files.length} file will be deleted from disk. This cannot be undone.`
+          : tx`${selected.size} of ${files.length} files will be deleted from disk. This cannot be undone.`}
+      </div>
+      <div className={styles.fileList} role="group" aria-label={tx("Files to delete")}>
+        {files.slice(0, DELETE_LISTED).map((f) => {
+          const path = stripSlash(f.path);
+          return (
+            <div key={path} className={styles.fileRow}>
+              <Checkbox
+                aria-label={tx`Include ${baseName(path)}`}
+                checked={selected.has(path)}
+                onChange={(v) =>
+                  setSelected((s) => {
+                    const n = new Set(s);
+                    if (v) n.add(path);
+                    else n.delete(path);
+                    return n;
+                  })
+                }
+              />
+              <Icon name={fileIconName(baseName(path))} size={14} />
+              <span className={styles.fileName}>{baseName(path)}</span>
+              <span className={styles.fileDir}>{dirName(relTo(root, path))}</span>
+            </div>
+          );
+        })}
+        {files.length > DELETE_LISTED && (
+          <div className={styles.fileRow}>
+            <span className={styles.fileDir}>{tx`…and ${files.length - DELETE_LISTED} more files`}</span>
+          </div>
+        )}
+      </div>
+      <div style={{ height: 12 }} />
+    </Dialog>
+  );
 }
 
 function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () => void }) {
