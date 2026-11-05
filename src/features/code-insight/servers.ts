@@ -100,6 +100,32 @@ export async function restartServer(id: ServerId) {
   }
 }
 
+/** Config files oxlint reads from its working directory (the language definitions' root markers). */
+const OXLINT_CONFIGS = new Set([".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]);
+
+let oxlintRestartTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Statuses a restart makes sense for; a missing binary still fails, a stopped one is not needed. */
+const RESTARTABLE: ReadonlySet<ServerStatus> = new Set(["starting", "ready", "busy", "crashed"]);
+
+/**
+ * oxlint loads its config (and with it any `jsPlugins`) once at startup, so a
+ * changed config applies only to a restarted server — restart the running ones,
+ * once per write burst. Editing the config is also how an installed plugin
+ * package gets picked up.
+ */
+function restartOxlintOnConfigChange(paths: readonly string[]) {
+  const changed = paths.some((p) => OXLINT_CONFIGS.has(p.split(/[\\/]/).pop() ?? ""));
+  if (!changed) return;
+  if (oxlintRestartTimer) clearTimeout(oxlintRestartTimer);
+  oxlintRestartTimer = setTimeout(() => {
+    oxlintRestartTimer = null;
+    for (const s of useServers.getState().servers.values()) {
+      if (s.name === "oxlint" && RESTARTABLE.has(s.status)) void restartServer(s.id);
+    }
+  }, 1000);
+}
+
 export function installServerEvents(): () => void {
   const off = onIdeEvent("languageServer", (e) => {
     const known = useServers.getState().servers.has(e.server);
@@ -117,6 +143,9 @@ export function installServerEvents(): () => void {
       return { servers };
     });
   });
+  const offFs = onIdeEvent("fsChanged", (e) =>
+    restartOxlintOnConfigChange([...e.created, ...e.modified, ...e.removed]),
+  );
   let root = useProject.getState().project?.root ?? null;
   void refreshServers();
   const unsub = useProject.subscribe((s) => {
@@ -129,6 +158,11 @@ export function installServerEvents(): () => void {
   return () => {
     off();
     offRemoved();
+    offFs();
+    if (oxlintRestartTimer) {
+      clearTimeout(oxlintRestartTimer);
+      oxlintRestartTimer = null;
+    }
     unsub();
   };
 }

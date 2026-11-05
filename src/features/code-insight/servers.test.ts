@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerId, ServerInfo } from "@/bindings";
 
 const pending = vi.hoisted(() => [] as ((data: ServerInfo[]) => void)[]);
+const restarts = vi.hoisted(() => [] as number[]);
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const ipc = await importOriginal<typeof import("@/platform/ipc")>();
@@ -14,6 +15,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         new Promise((resolve) => {
           pending.push((data) => resolve({ status: "ok", data }));
         }),
+      lspRestart: (server: number) => {
+        restarts.push(server);
+        return Promise.resolve({ status: "ok", data: null });
+      },
     },
   };
 });
@@ -74,6 +79,65 @@ describe("server status", () => {
 
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 13 as ServerId });
     expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("basedpyright");
+  });
+
+  it("restarts oxlint once per burst of config changes", async () => {
+    vi.useFakeTimers();
+    try {
+      useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
+      dispose = installServerEvents();
+      const info = (id: number, name: string): ServerInfo => ({
+        id: id as ServerId,
+        name,
+        languages: ["typescript"],
+        root: "/p",
+        status: "ready",
+        pid: null,
+      });
+      pending.splice(0).forEach((resolve) => resolve([info(1, "vtsls"), info(2, "oxlint")]));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect([...useServers.getState().servers.keys()]).toEqual([1, 2]);
+
+      // Writes that are not an oxlint config don't restart anything.
+      emitLocalIdeEvent({
+        type: "fsChanged",
+        created: [],
+        modified: ["/p/src/a.ts", "/p/eslint.config.js"],
+        removed: [],
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(restarts).toEqual([]);
+
+      // One restart after the burst settles, for the running oxlint server only.
+      restarts.splice(0);
+      emitLocalIdeEvent({
+        type: "fsChanged",
+        created: [],
+        modified: ["/p/.oxlintrc.json", "/p/oxlint.config.mts"],
+        removed: [],
+      });
+      emitLocalIdeEvent({ type: "fsChanged", created: ["/p/.oxlintrc.jsonc"], modified: [], removed: [] });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(restarts).toEqual([]);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(restarts).toEqual([2]);
+
+      // A stopped (shadowed) or missing oxlint is left alone.
+      restarts.splice(0);
+      emitLocalIdeEvent({
+        type: "languageServer",
+        server: 2 as ServerId,
+        name: "oxlint",
+        status: "stopped",
+        message: null,
+      });
+      emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/apps/web/.oxlintrc.json"], removed: [] });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(restarts).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
