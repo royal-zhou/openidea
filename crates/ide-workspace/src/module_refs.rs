@@ -93,7 +93,15 @@ pub fn resolve_with(root: &Path, from: &Path, specifier: &str, settings_aliases:
         } else {
             normalize(&from_dir.join(&spec))
         };
-        add(&mut out, probe(&base), "relative path");
+        let targets = if spec.ends_with('/') {
+            directory_entries(&base)
+        } else if base.is_dir() {
+            let files = suffixed_files(&base);
+            if files.is_empty() { directory_entries(&base) } else { files }
+        } else {
+            probe(&base)
+        };
+        add(&mut out, targets, "relative path");
         return out;
     }
 
@@ -216,32 +224,23 @@ fn with_ext(path: &Path, ext: &str) -> PathBuf {
 /// and a directory's package entry. Ordered `.ts`/`.tsx` first, `.d.ts` last.
 fn probe(base: &Path) -> Vec<PathBuf> {
     let base = normalize(base);
-    let mut out: Vec<PathBuf> = Vec::new();
     if base.is_file() {
-        out.push(base);
-        return dedupe(out);
+        return vec![base];
     }
     if base.is_dir() {
-        for ext in EXTS {
-            let p = base.join(format!("index.{ext}"));
-            if p.is_file() {
-                out.push(p);
-            }
-        }
-        if let Some(p) = package_entry_file(&base) {
-            out.push(p);
-        }
-        return dedupe(out);
+        return directory_entries(&base);
     }
-    for ext in EXTS {
-        let p = with_ext(&base, ext);
-        if p.is_file() {
-            out.push(p);
-        }
-    }
-    let declarations = with_ext(&base, "d.ts");
-    if declarations.is_file() {
-        out.push(declarations);
+    suffixed_files(&base)
+}
+
+fn suffixed_files(base: &Path) -> Vec<PathBuf> {
+    EXTS.iter().copied().chain(["d.ts"]).map(|ext| with_ext(base, ext)).filter(|p| p.is_file()).collect()
+}
+
+fn directory_entries(base: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<_> = EXTS.iter().map(|ext| base.join(format!("index.{ext}"))).filter(|p| p.is_file()).collect();
+    if let Some(p) = package_entry_file(base) {
+        out.push(p);
     }
     dedupe(out)
 }
@@ -1055,9 +1054,20 @@ fn prefer_package_source(dir: &Path, targets: Vec<PathBuf>) -> Vec<PathBuf> {
 fn workspace_package_containing(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let path = dunce::canonicalize(path).ok()?;
-    if !path.starts_with(&root) || path_has_component(&path, "node_modules") {
+    if path_has_component(&path, "node_modules") {
         return None;
     }
+    let root = if path.starts_with(&root) {
+        root
+    } else {
+        // Opening a single app still allows definitions in sibling packages
+        // linked by pnpm. Keep the lookup inside that same workspace.
+        let workspace = workspace_root(&root)?;
+        if workspace_root(&path).as_ref() != Some(&workspace) {
+            return None;
+        }
+        workspace
+    };
     let mut dir = path.parent()?.to_path_buf();
     loop {
         if dir.join("package.json").is_file() {
@@ -1620,6 +1630,26 @@ mod tests {
     }
 
     #[test]
+    fn relative_module_prefers_files_over_directory_entries() {
+        let dir = project(&[
+            ("app/main.ts", ""),
+            ("scripts/www", ""),
+            ("scripts/www.js", ""),
+            ("modules/www.vue", ""),
+            ("modules/www/index.ts", ""),
+        ]);
+        let root = dir.path();
+        let from = root.join("app/main.ts");
+        for (specifier, expected) in [
+            ("../scripts/www", "scripts/www"),
+            ("../modules/www", "modules/www.vue"),
+            ("../modules/www/", "modules/www/index.ts"),
+        ] {
+            assert_eq!(paths_of(&resolve(root, &from, specifier)), [root.join(expected).to_string_lossy()]);
+        }
+    }
+
+    #[test]
     fn nested_relative_import_without_extension() {
         let dir = project(&[("src/businessComponents/tSceneOfficeDetail/OfficeDetailBaseInfo/index.tsx", "")]);
         let root = dir.path();
@@ -1777,6 +1807,41 @@ mod tests {
         let jumped = prefer_workspace_source(root, loc);
         assert_eq!(jumped.path.to_string_lossy(), root.join("packages/sceneCore/src/core/config.ts").to_string_lossy());
         assert_eq!(jumped.range.start, Pos::new(0, "export function ".len() as u32));
+    }
+
+    #[test]
+    fn pnpm_app_root_redirects_definitions_in_sibling_packages() {
+        let dir = project(&[
+            ("pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n"),
+            ("apps/web/package.json", r#"{"name":"web"}"#),
+            ("packages/core/package.json", r#"{"name":"@acme/core"}"#),
+            ("packages/core/dist/types/utils/guard.d.ts", "export declare function installGuard(): void;\n"),
+            ("packages/core/src/utils/guard.ts", "\nexport function installGuard() {}\n"),
+            ("other/pnpm-workspace.yaml", "packages: []\n"),
+            ("other/package.json", r#"{"name":"other"}"#),
+            ("other/dist/index.js", "export const guard = 1;\n"),
+            ("other/src/index.ts", "export const guard = 1;\n"),
+        ]);
+        let root = dir.path();
+        let app = root.join("apps/web");
+        let built = root.join("packages/core/dist/types/utils/guard.d.ts");
+        let range = Range::new(Pos::new(0, 24), Pos::new(0, 36));
+        let jumped = prefer_workspace_source(&app, Location::file(built.clone(), range));
+        let source = dunce::canonicalize(root.join("packages/core/src/utils/guard.ts")).unwrap();
+        assert_eq!(jumped.path, source.as_path());
+        assert_eq!(jumped.range.start, Pos::new(1, 16));
+
+        #[cfg(unix)]
+        {
+            let link = app.join("node_modules/@acme/core");
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(root.join("packages/core"), &link).unwrap();
+            let linked = Location::file(link.join("dist/types/utils/guard.d.ts"), range);
+            assert_eq!(prefer_workspace_source(&app, linked), jumped);
+        }
+
+        let unrelated = Location::file(root.join("other/dist/index.js"), Range::point(Pos::new(0, 0)));
+        assert_eq!(prefer_workspace_source(&app, unrelated.clone()), unrelated);
     }
 
     #[test]

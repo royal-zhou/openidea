@@ -74,6 +74,7 @@ const URL_RE = /\b(?:https?:\/\/|mailto:)[^\s"'`<>()[\]{}]+[^\s"'`<>()[\]{},.;:!
 const QUOTED_RE = /"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\\n]*)`/g;
 /** Unquoted targets: Markdown `[x](path)` / `![x](path "title")`, CSS `url(path)`. */
 const BARE_RE = /\]\(([^()\s]+)(?:\s+"[^"]*")?\)|\burl\(\s*([^()'"\s]+)\s*\)/g;
+const RELATIVE_PATH_RE = /(?:^|[\s(=])((?:\.\.?\/)+(?:[\w@~.%+-]+\/)*[\w@~.%+-]+)(?=$|[\s),;])/g;
 const MAX_PATH = 260;
 
 /** Whether a string literal looks like a file path rather than prose or an identifier. */
@@ -102,31 +103,63 @@ export function textReference(text: Text, offset: number): Reference | null {
     if (col < from || col > from + value.length || !looksLikePath(value)) continue;
     return { kind: "path", from: line.from + from, to: line.from + from + value.length, value };
   }
+  for (const m of line.text.matchAll(RELATIVE_PATH_RE)) {
+    const value = m[1]!;
+    const from = m.index + m[0].length - value.length;
+    if (col >= from && col <= from + value.length)
+      return { kind: "path", from: line.from + from, to: line.from + from + value.length, value };
+  }
   return null;
+}
+
+/** Explicit relative paths with no suffix on the final segment. */
+export function isExtensionlessRelativePath(value: string): boolean {
+  const path = value.split(/[?#]/, 1)[0]!;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return /^\.\.?\//.test(path) && !!name && !name.includes(".");
 }
 
 /** Languages whose quoted `import` / `require` specifiers may be module paths. */
 const MODULE_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"]);
 
+/** Whether the caret is on the binding side of an import from a bare package. */
+export function isPackageImportBinding(text: Text, offset: number, language: string): boolean {
+  if (!MODULE_LANGUAGES.has(language)) return false;
+  const line = text.lineAt(offset);
+  const clause = /^\s*(?:import|export)\s+(.+?)\s+from\s*['"](?:@[\w.-]+\/)?[\w-]/.exec(line.text);
+  return !!clause && offset - line.from < clause[0].lastIndexOf("from");
+}
+
 /** `import … from "x"`, `export … from "x"`, `import "x"`, `require("x")`, `import("x")`. */
 const MODULE_SPECIFIER_RE =
   /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire(?:\.resolve)?\s*\(\s*|\bimport\s+)(["'`])([^"'`\n]+)\1/g;
 
-/** The module specifier at `offset` (`@/components/Foo.vue`), when the caret is inside one. */
-export function moduleReferenceAt(text: Text, offset: number, language: string): ModuleReference | null {
+/** The module specifier at `offset`, optionally including a relative import's binding. */
+export function moduleReferenceAt(
+  text: Text,
+  offset: number,
+  language: string,
+  includeRelativeBinding = false,
+): ModuleReference | null {
   if (!MODULE_LANGUAGES.has(language)) return null;
   const line = text.lineAt(offset);
   const col = offset - line.from;
   for (const m of line.text.matchAll(MODULE_SPECIFIER_RE)) {
     const value = m[2] ?? "";
     const start = m.index + m[0].lastIndexOf(value);
-    if (!value || col < start || col > start + value.length) continue;
+    const onBinding =
+      includeRelativeBinding &&
+      isExtensionlessRelativePath(value) &&
+      m[0].startsWith("from") &&
+      col < m.index &&
+      /^\s*(?:import|export)\s+/.test(line.text);
+    if (!value || (!onBinding && (col < start || col > start + value.length))) continue;
     return { kind: "module", from: line.from + start, to: line.from + start + value.length, specifier: value };
   }
   return null;
 }
 
-async function isFile(path: string): Promise<boolean> {
+export async function isFile(path: string): Promise<boolean> {
   if (!isTauri()) return false;
   try {
     await call(commands.fsProbe(path));

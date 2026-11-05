@@ -2562,6 +2562,37 @@ async fn opening_a_file_during_a_search_takes_it_over() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn goto_retries_after_server_analysis() {
+    let h = harness(&[("mock", json!({ "definitionProvider": true }))]);
+    let s = h.launcher.state("mock");
+    let (doc, path) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = s.peer();
+    peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "begin", "title": "Indexing" } })).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let first_answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let answered = first_answered.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, _| {
+        (method == "textDocument/definition" && !answered.swap(true, Ordering::SeqCst)).then(|| json!([]))
+    }));
+    let mgr = h.mgr.clone();
+    let pending = tokio::spawn(async move { mgr.goto(doc, Pos::new(0, 5), GotoKind::Definition).await });
+    eventually(|| first_answered.load(Ordering::SeqCst)).await;
+    assert!(!pending.is_finished());
+    s.respond(
+        "textDocument/definition",
+        json!({
+            "uri": uri_of(&path),
+            "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 10 } }
+        }),
+    );
+    peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "end" } })).unwrap();
+    let targets = pending.await.unwrap().unwrap();
+    assert_eq!(targets[0].range.start, Pos::new(0, 4));
+    assert_eq!(s.requested("textDocument/definition").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
     let h = harness(&[("mock", incremental_caps())]);
     let s = h.launcher.state("mock");

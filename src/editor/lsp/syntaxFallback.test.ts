@@ -13,6 +13,9 @@ const cmd = {
   lspDocumentLinks: vi.fn(() => ok([])),
   cancelRequest: vi.fn(() => ok(null)),
   lspGoto: vi.fn((): R<unknown> => unavailable()),
+  fsResolveReference: vi.fn((): R<string | null> => ok(null)),
+  fsResolveModule: vi.fn((): R<unknown[]> => ok([])),
+  fsProbe: vi.fn((): R<unknown> => ok(null)),
   lspDocumentHighlights: vi.fn((): R<unknown> => unavailable()),
   lspPrepareRename: vi.fn((): R<unknown> => unavailable()),
   lspRename: vi.fn((): R<unknown> => unavailable()),
@@ -295,6 +298,44 @@ describe("rename helpers", () => {
 });
 
 describe("navigation wiring", () => {
+  it.each(["binding", "specifier"] as const)("repairs a missing Vue definition path from the %s", async (at) => {
+    const specifier = "../../businessComponents/tSceneOfficeDetail/OfficeBanner";
+    const source = `import OfficeBanner from '${specifier}';`;
+    const missing = "/p/businessComponents/tSceneOfficeDetail/OfficeBanner";
+    const target = `${missing}.vue`;
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: missing, range: r(0, 0, 0), uri: null }]));
+    cmd.fsProbe.mockReturnValueOnce(
+      Promise.resolve({ status: "error", error: { kind: "notFound", message: "No such file or directory" } }),
+    );
+    cmd.fsResolveModule.mockReturnValueOnce(ok([{ path: target, dir: false, via: "relative path" }]));
+    const offset = source.indexOf("OfficeBanner", at === "binding" ? 0 : source.indexOf(specifier));
+    await gotoTargets(editor(source, "vue", offset), "definition");
+    expect(cmd.fsProbe).toHaveBeenCalledWith(missing);
+    expect(cmd.fsResolveModule).toHaveBeenCalledWith("/p/a.ts", specifier);
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(target, { focus: true, selection: { line: 0, col: 0 } });
+  });
+
+  it("resolves an omitted module suffix when the exact file does not exist", async () => {
+    const source = 'import App from "../xxxx/www"';
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    cmd.fsResolveModule.mockReturnValueOnce(ok([{ path: "/xxxx/www.vue", dir: false, via: "relative path" }]));
+    await gotoTargets(editor(source, "typescript", source.indexOf("www")), "definition");
+    expect(cmd.fsResolveModule).toHaveBeenCalledWith("/p/a.ts", "../xxxx/www");
+    expect(openFile).toHaveBeenCalledWith("/xxxx/www.vue", { focus: true, selection: { line: 0, col: 0 } });
+  });
+
+  it.each(['require("../xxxx/www")', "node ../xxxx/www"])(
+    "opens the exact extensionless file in %s",
+    async (source) => {
+      cmd.fsResolveReference.mockReturnValueOnce(ok("/xxxx/www"));
+      const view = editor(source, "javascript", source.indexOf("www"));
+      await gotoTargets(view, "definition");
+      expect(cmd.fsResolveReference).toHaveBeenCalledWith("/p/a.ts", "../xxxx/www");
+      expect(cmd.lspGoto).not.toHaveBeenCalled();
+      expect(openFile).toHaveBeenCalledWith("/xxxx/www", { focus: true });
+    },
+  );
+
   it("respects an empty server answer", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
     const view = editor("const x = 1;\nx;", "typescript", 13);

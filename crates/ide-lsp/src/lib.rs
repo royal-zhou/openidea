@@ -1124,7 +1124,22 @@ impl LspManager {
     pub async fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
-        self.goto_in(&snap, &targets, method, pos, None).await
+        let busy_before = targets.iter().any(|t| snap.asks(t, pos) && t.server.is_busy());
+        let locations = self.goto_in(&snap, &targets, method, pos, None).await?;
+        if !locations.is_empty() || !matches!(kind, GotoKind::Definition | GotoKind::Declaration) {
+            return Ok(locations);
+        }
+        let busy: Vec<_> = targets.iter().filter(|t| snap.asks(t, pos) && t.server.is_busy()).collect();
+        if !busy_before && busy.is_empty() {
+            return Ok(locations);
+        }
+        let cancel = CancellationToken::default();
+        let settled = join_all(busy.iter().map(|t| t.server.wait_idle(DEFAULT_TIMEOUT, &cancel))).await;
+        if settled.into_iter().all(|idle| idle) && self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version)
+        {
+            return self.goto_in(&snap, &targets, method, pos, None).await;
+        }
+        Ok(locations)
     }
 
     /// Implementations of the symbols at each of `positions` (gutter line

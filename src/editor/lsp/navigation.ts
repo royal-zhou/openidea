@@ -53,10 +53,14 @@ import { identifierAt, readManyFileLines } from "./files";
 import {
   documentLinks,
   followReference,
+  isExtensionlessRelativePath,
+  isFile,
+  isPackageImportBinding,
   knownLinks,
   linkReference,
   moduleReferenceAt,
   referenceAt,
+  resolvePath,
   textReference,
 } from "./links";
 import { featureBackoff } from "./availability";
@@ -147,21 +151,39 @@ export function pinToFind(symbol: string, locations: readonly Location[]) {
 
 /** When each editor's document last changed (`performance.now()`). */
 const editedAt = new WeakMap<EditorView, number>();
+const pendingNavigation = new WeakMap<EditorView, object>();
 
 /**
  * Some servers analyse an edit asynchronously and answer from the previous
  * version meanwhile (kotlin-language-server: nothing for ~300 ms after typing).
  * An empty answer right after an edit is asked again a few times.
  */
-async function gotoAfterEdits(view: EditorView, request: () => Promise<DeclarationTarget[]>) {
+async function gotoWhenReady(
+  view: EditorView,
+  request: () => Promise<DeclarationTarget[]>,
+  wanted: () => boolean,
+  packageImport: boolean,
+) {
+  // Vue's TypeScript bridge can return an empty answer while loading a package
+  // without reporting LSP work-done progress.
+  const deadline = performance.now() + 5000;
   for (let attempt = 0; ; attempt++) {
     const locs = await request();
-    if (locs.length || attempt >= 3 || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500) return locs;
-    await new Promise((r) => setTimeout(r, 250));
+    if (locs.length || !wanted()) return locs;
+    if (
+      packageImport
+        ? performance.now() >= deadline
+        : attempt >= 3 || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500
+    )
+      return locs;
+    await new Promise((r) => setTimeout(r, packageImport ? 500 : 250));
+    if (!wanted()) return locs;
   }
 }
 
 export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number) {
+  const token = {};
+  pendingNavigation.set(view, token);
   const offset = at ?? view.state.selection.main.head;
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
@@ -170,19 +192,63 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   }
   const doc = docOf(view);
   if (!doc) return;
+  const source = view.state;
+  const wasActive = activeEditor()?.view === view;
+  const wanted = () =>
+    pendingNavigation.get(view) === token &&
+    view.dom.isConnected &&
+    view.state.doc === source.doc &&
+    view.state.selection.eq(source.selection) &&
+    (!wasActive || activeEditor()?.view === view);
   const pos = offsetToPos(view.state.doc, offset);
   let locs: DeclarationTarget[];
   let fromSyntax = false;
   const declaration = kind === "definition" || kind === "declaration";
+  if (declaration && !doc.virtual) {
+    const ref = textReference(view.state.doc, offset);
+    if (ref?.kind === "path" && isExtensionlessRelativePath(ref.value)) {
+      const exact = await resolvePath(ref, doc.path);
+      if (!wanted()) return;
+      // A real file wins over an LSP's suffix substitution. For imports,
+      // a directory can still resolve to a module entry or a suffixed file.
+      if (
+        exact?.kind === "file" ||
+        (exact?.kind === "folder" && !moduleReferenceAt(view.state.doc, offset, doc.language))
+      ) {
+        await followReference(exact);
+        return;
+      }
+    }
+  }
   let serverDown = false;
+  const packageImport = declaration && !doc.virtual && isPackageImportBinding(source.doc, offset, doc.language);
+  const module = declaration && !doc.virtual ? moduleReferenceAt(source.doc, offset, doc.language, true) : null;
   try {
-    const done = showPendingHint(view, tx`Finding navigation target…`);
+    const done = showPendingHint(view, packageImport ? tx("Analyzing…") : tx("Finding navigation target…"));
     try {
-      locs = dedupeLocations(await gotoAfterEdits(view, () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind))));
+      locs = dedupeLocations(
+        await gotoWhenReady(
+          view,
+          () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind), wanted),
+          wanted,
+          packageImport,
+        ),
+      );
+      if (module && isExtensionlessRelativePath(module.specifier) && wanted()) {
+        // Some Vue server responses use the literal import path as the
+        // definition URI, even when only the suffixed file exists.
+        const usable = await Promise.all(
+          locs.map(
+            async (loc) => isVirtualUri(loc.uri ?? loc.path) || basename(loc.path).includes(".") || isFile(loc.path),
+          ),
+        );
+        locs = locs.filter((_, i) => usable[i]);
+      }
     } finally {
       done();
     }
   } catch (e) {
+    if (!wanted()) return;
     if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);
       return;
@@ -199,6 +265,10 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     locs = fb;
     fromSyntax = true;
   }
+  if (!wanted()) return;
+  // Vue can resolve an imported component name back to its own import
+  // binding. Follow the module in that case, just as with an empty reply.
+  if (module && offset < module.from && isSelfTarget(locs, doc.path, pos)) locs = [];
   if (!locs.length) {
     // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
     if (
@@ -273,7 +343,7 @@ async function gotoWebReference(view: EditorView, doc: EditorDocContext, pos: Po
 
 /** Follows the link, URL or file path at `offset`; false when there is none. */
 async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<boolean> {
-  const module = moduleReferenceAt(view.state.doc, offset, doc.language);
+  const module = moduleReferenceAt(view.state.doc, offset, doc.language, true);
   if (module && !doc.virtual) {
     const targets = await call(commands.fsResolveModule(doc.path, module.specifier)).catch(() => []);
     if (!targets.length) {
