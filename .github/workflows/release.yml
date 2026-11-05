@@ -37,6 +37,8 @@ jobs:
           fi
       - id: release
         uses: actions/github-script@v7
+        env:
+          UPDATER_SIGNING_ENABLED: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         with:
           script: |
             const tag = process.env.TAG;
@@ -44,7 +46,19 @@ jobs:
             const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
-              if (!existing.draft) core.setFailed(`release ${tag} is already published`);
+              if (!existing.draft) {
+                core.setFailed(`release ${tag} is already published`);
+                return;
+              }
+              if (process.env.UPDATER_SIGNING_ENABLED !== "true") {
+                const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+                  owner, repo, release_id: existing.id,
+                });
+                if (assets.some((a) => a.name.endsWith(".sig") || a.name === "latest.json")) {
+                  core.setFailed(`draft ${tag} already has updater assets; restore TAURI_SIGNING_PRIVATE_KEY before retrying`);
+                  return;
+                }
+              }
               core.setOutput("id", existing.id);
               return;
             }
@@ -98,7 +112,16 @@ jobs:
                    APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
             [ -n "${!v}" ] && { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
           done
-          true
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is unset; building installers without updater artifacts"
+            node <<'JS'
+          const fs = require('node:fs');
+          const path = 'src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.bundle.createUpdaterArtifacts = false;
+          fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+          JS
+          fi
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
