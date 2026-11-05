@@ -64,7 +64,7 @@ fn ids(commits: &[Commit]) -> Vec<String> {
 }
 
 fn parents_of(commits: &[Commit], id: &str) -> Vec<String> {
-    commits.iter().find(|c| c.id == id).unwrap().parents.clone()
+    commits.iter().find(|c| c.id == id).unwrap().graph_parents.clone().unwrap()
 }
 
 #[test]
@@ -73,6 +73,14 @@ fn date_order_follows_commit_time_and_reports_it() {
     let out = log(&h, LogQuery { order: LogOrder::Date, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.s1.clone(), h.c1.clone()]);
     assert_eq!(out[0].commit_time_ms, 5_000_000.0);
+}
+
+#[test]
+fn incoming_order_groups_the_merged_branch_before_the_main_parent() {
+    let h = history();
+    let out = log(&h, LogQuery { order: LogOrder::Standard, ..Default::default() });
+    assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.s1.clone(), h.c2.clone(), h.c1.clone()]);
+    assert_eq!(out[1].parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]
@@ -90,6 +98,7 @@ fn first_parent_skips_merged_branches() {
     let out = log(&h, LogQuery { first_parent: true, ..Default::default() });
     assert_eq!(ids(&out), vec![h.c3.clone(), h.m.clone(), h.c2.clone(), h.c1.clone()]);
     assert_eq!(parents_of(&out, &h.m), vec![h.c2.clone()]);
+    assert_eq!(out.iter().find(|c| c.id == h.m).unwrap().parents, vec![h.c2.clone(), h.s1.clone()]);
 }
 
 #[test]
@@ -180,53 +189,48 @@ fn remotes_and_worktrees_are_managed() {
 }
 
 #[test]
-fn file_history_links_the_commits_it_shows() {
+fn a_user_filter_links_shown_commits_past_hidden_ones() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q"], None);
-    let c1 = commit(dir, "a.txt", "c1", 1000);
-    let c2 = commit(dir, "b.txt", "c2", 2000);
-    let c3 = commit(dir, "a.txt", "c3", 3000);
-    let repo = Repo::discover(dir).unwrap().unwrap();
-    let path = || Some(dir.join("a.txt").into());
-
-    let out = repo.log(&LogQuery { path: path(), ..Default::default() }).unwrap();
-    assert_eq!(ids(&out), vec![c3.clone(), c1.clone()]);
-    // Diffs and operations keep the commit's real parent…
-    assert_eq!(parents_of(&out, &c3), vec![c2]);
-    // …while the graph links the commits the log shows, past the one it leaves out.
-    assert_eq!(out[0].graph_parents, vec![c1.clone()]);
-    assert!(out[1].graph_parents.is_empty());
-
-    // Rewriting does not depend on the page: a later page carries the same edges.
-    let page = repo.log(&LogQuery { path: path(), skip: 1, limit: 1, ..Default::default() }).unwrap();
-    assert_eq!(ids(&page), vec![c1]);
-    assert!(page[0].graph_parents.is_empty());
-}
-
-#[test]
-fn file_history_links_a_merge_to_both_shown_sides() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path();
-    git(dir, &["init", "-q"], None);
-    let c1 = commit(dir, "a.txt", "base", 1000);
-    git(dir, &["checkout", "-q", "-b", "feat"], None);
-    let f1 = commit(dir, "a.txt", "feat a", 2000);
-    git(dir, &["checkout", "-q", "main"], None);
-    let c2 = commit(dir, "b.txt", "main b", 3000);
-    // The merge resolves a.txt itself, so it differs from both parents and is shown.
-    git(dir, &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"], Some(4000));
-    std::fs::write(dir.join("a.txt"), "resolved").unwrap();
-    git(dir, &["add", "-A"], None);
-    git(dir, &["commit", "-q", "--amend", "--no-edit"], Some(4000));
-    let m = git(dir, &["rev-parse", "HEAD"], None);
+    let by = |who: &str, file: &str, msg: &str, time: i64| {
+        std::fs::write(dir.join(file), msg).unwrap();
+        git(dir, &["add", "-A"], None);
+        let email = format!("user.email={who}@example.com");
+        git(dir, &["-c", &email, "commit", "-q", "-m", msg], Some(time));
+        git(dir, &["rev-parse", "HEAD"], None)
+    };
+    let m1 = by("me", "a", "m1", 1_000);
+    let o1 = by("other", "b", "o1", 2_000);
+    let m2 = by("me", "c", "m2", 3_000);
+    let m3 = by("me", "d", "m3", 4_000);
+    let _o2 = by("other", "e", "o2", 5_000);
     let repo = Repo::discover(dir).unwrap().unwrap();
 
-    let out = repo.log(&LogQuery { path: Some(dir.join("a.txt").into()), ..Default::default() }).unwrap();
-    assert_eq!(ids(&out), vec![m.clone(), f1.clone(), c1.clone()]);
-    // The real parents stay: main's side (c2) did not touch the file.
-    assert_eq!(parents_of(&out, &m), vec![c2, f1.clone()]);
-    // The graph joins the merge to both lines of the file's history.
-    assert_eq!(out[0].graph_parents, vec![c1.clone(), f1.clone()]);
-    assert_eq!(out[1].graph_parents, vec![c1.clone()]);
+    let log = repo.log(&LogQuery { author: Some("me@".into()), ..Default::default() }).unwrap();
+    let links: Vec<(&str, Vec<&str>, Vec<bool>)> = log
+        .iter()
+        .map(|c| {
+            (
+                c.summary.as_str(),
+                c.graph_parents.as_ref().unwrap().iter().map(String::as_str).collect(),
+                if c.graph_dashed.iter().any(|d| *d) { c.graph_dashed.clone() } else { Vec::new() },
+            )
+        })
+        .collect();
+    assert_eq!(
+        links,
+        [("m3", vec![m2.as_str()], vec![]), ("m2", vec![m1.as_str()], vec![true]), ("m1", vec![], vec![]),],
+        "m2's parent o1 is hidden: m2 links to m1, dashed"
+    );
+    assert!(!log.iter().any(|c| c.graph_parents.as_ref().unwrap().contains(&o1)));
+    assert_eq!(log[1].parents, vec![o1]);
+
+    // A page ends at m2: walking on still links it to m1.
+    let page = repo.log(&LogQuery { author: Some("me@".into()), limit: 2, ..Default::default() }).unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[1].graph_parents.as_deref().unwrap(), std::slice::from_ref(&m1));
+    let next = repo.log(&LogQuery { author: Some("me@".into()), skip: 2, limit: 2, ..Default::default() }).unwrap();
+    assert_eq!(next.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&m1));
+    let _ = m3;
 }

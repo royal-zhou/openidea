@@ -27,6 +27,27 @@ export function nearestMark<M extends { top: number; bottom: number }>(marks: re
   return best;
 }
 
+/** The smallest scrollbar thumb (`::-webkit-scrollbar-thumb` min-height in global.css). */
+const MIN_THUMB = 32;
+
+/**
+ * Where the vertical scrollbar thumb of a scroller is, in px from the top of its track, or null
+ * when nothing scrolls. The overview lane lies over the scrollbar, so its marks must not take
+ * the pointer where the thumb is (#752).
+ */
+export function scrollbarThumb(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  minThumb = MIN_THUMB,
+): { top: number; bottom: number } | null {
+  const max = scrollHeight - clientHeight;
+  if (max <= 0 || clientHeight <= 0) return null;
+  const length = Math.min(clientHeight, Math.max(minThumb, (clientHeight * clientHeight) / scrollHeight));
+  const top = (Math.min(Math.max(scrollTop, 0), max) / max) * (clientHeight - length);
+  return { top, bottom: top + length };
+}
+
 /** Unfolds the folds hiding `pos` or the rest of its line (navigating to a mark shows it). */
 export function unfoldAround(state: EditorState, pos: number): StateEffect<unknown>[] {
   const lineEnd = state.doc.lineAt(pos).to;
@@ -41,12 +62,25 @@ class OverviewLane {
   dom: HTMLElement;
   private scheduled = false;
   private lastKey = "";
+  /** The last pointer position over the editor, to re-check the thumb when it scrolls. */
+  private pointer: { x: number; y: number } | null = null;
+  /**
+   * The scrollbar thumb, drawn and dragged by the lane: the native scrollbar is hidden, so a
+   * press on this strip stays here instead of reaching the text layer as a text drag.
+   */
+  private thumb: HTMLElement;
 
   constructor(private view: EditorView) {
     this.dom = document.createElement("div");
     this.dom.className = "cm-openidea-overview";
     this.dom.setAttribute("aria-hidden", "true");
+    this.thumb = document.createElement("div");
+    this.thumb.className = "cm-openidea-overviewThumb";
     this.dom.addEventListener("mousedown", this.onMouseDown);
+    this.thumb.addEventListener("mousedown", this.onThumbMouseDown);
+    view.dom.addEventListener("mousemove", this.onPointerMove);
+    view.dom.addEventListener("mouseleave", this.onPointerLeave);
+    view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
     view.dom.appendChild(this.dom);
     this.schedule();
   }
@@ -127,10 +161,90 @@ class OverviewLane {
         c.className = "cm-openidea-overviewCaret";
         c.style.top = `${caret}${unit}`;
         frag.appendChild(c);
+        frag.appendChild(this.thumb);
         this.dom.replaceChildren(frag);
       },
     });
+    this.scheduleThumb();
   }
+
+  private scheduleThumb() {
+    this.view.requestMeasure({
+      key: this.thumb,
+      read: (view) => {
+        const s = view.scrollDOM;
+        const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
+        // The lane starts at the top of the editor, the scrollbar at the top of the scroller.
+        const offset = s.getBoundingClientRect().top - this.dom.getBoundingClientRect().top;
+        // The drawn thumb matches the geometry the drag maps onto, so the pointer keeps its grip.
+        return thumb && { top: thumb.top + offset, height: thumb.bottom - thumb.top };
+      },
+      write: (thumb) => {
+        this.thumb.style.display = thumb ? "" : "none";
+        if (!thumb) return;
+        this.thumb.style.top = `${thumb.top}px`;
+        this.thumb.style.height = `${thumb.height}px`;
+      },
+    });
+  }
+
+  /**
+   * Over the thumb the marks let the pointer through, so the thumb can be dragged even where a
+   * mark covers it (a new file is one mark the height of the lane, #752).
+   */
+  private updateThumbPassThrough() {
+    const p = this.pointer;
+    let over = false;
+    if (p) {
+      const lane = this.dom.getBoundingClientRect();
+      const s = this.view.scrollDOM;
+      const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
+      const y = p.y - s.getBoundingClientRect().top;
+      over = !!thumb && p.x >= lane.left && p.x <= lane.right && y >= thumb.top && y <= thumb.bottom;
+    }
+    this.dom.classList.toggle("cm-openidea-overview-onThumb", over);
+  }
+
+  private onPointerMove = (e: MouseEvent) => {
+    this.pointer = { x: e.clientX, y: e.clientY };
+    // A thumb drag in progress keeps the marks out of the way until the button is released.
+    if (e.buttons === 0) this.updateThumbPassThrough();
+  };
+
+  private onPointerLeave = () => {
+    this.pointer = null;
+    this.updateThumbPassThrough();
+  };
+
+  private onScroll = () => {
+    this.scheduleThumb();
+    if (this.pointer) this.updateThumbPassThrough();
+  };
+
+  /** The thumb's own press: drag it, keeping the button state inside the lane. */
+  private onThumbMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const s = this.view.scrollDOM;
+    const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
+    if (!thumb) return;
+    const startY = e.clientY;
+    const startTop = s.scrollTop;
+    const travel = s.scrollHeight - s.clientHeight;
+    // The distance the thumb can move: the track minus the thumb itself.
+    const track = Math.max(1, s.clientHeight - (thumb.bottom - thumb.top));
+    const onMove = (ev: MouseEvent) => {
+      s.scrollTop = startTop + ((ev.clientY - startY) * travel) / track;
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      this.updateThumbPassThrough();
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   private onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
@@ -139,7 +253,17 @@ class OverviewLane {
       return { top: r.top, bottom: r.bottom, pos: Number(el.dataset.pos) };
     });
     const hit = nearestMark(marks, e.clientY);
-    if (!hit) return;
+    if (!hit) {
+      // Above / below the thumb pages the editor, like the native track it replaces.
+      const s = this.view.scrollDOM;
+      const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
+      e.preventDefault();
+      if (!thumb) return;
+      const y = e.clientY - s.getBoundingClientRect().top;
+      if (y < thumb.top) s.scrollTop -= s.clientHeight;
+      else if (y > thumb.bottom) s.scrollTop += s.clientHeight;
+      return;
+    }
     e.preventDefault();
     const state = this.view.state;
     const pos = Math.min(hit.pos, state.doc.length);
@@ -153,8 +277,15 @@ class OverviewLane {
 
   destroy() {
     this.dom.removeEventListener("mousedown", this.onMouseDown);
+    this.thumb.removeEventListener("mousedown", this.onThumbMouseDown);
+    this.view.dom.removeEventListener("mousemove", this.onPointerMove);
+    this.view.dom.removeEventListener("mouseleave", this.onPointerLeave);
+    this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
     this.dom.remove();
   }
 }
 
-export const overviewLane: Extension = ViewPlugin.fromClass(OverviewLane);
+export const overviewLane: Extension = [
+  ViewPlugin.fromClass(OverviewLane),
+  EditorView.editorAttributes.of({ class: "cm-openidea-withOverview" }),
+];

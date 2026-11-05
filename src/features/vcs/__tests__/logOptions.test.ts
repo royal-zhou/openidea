@@ -37,11 +37,28 @@ describe("Collapse Linear Branches", () => {
     ];
     const { commits: shown, graph } = collapseLinear(commits, new Set());
     expect(shown.map((x) => x.id)).toEqual(["t", "m", "base"]);
-    expect(graph.find((g) => g.id === "m")).toEqual({ id: "m", parents: ["base"], dashed: [true] });
-    expect(graph.find((g) => g.id === "t")).toEqual({ id: "t", parents: ["m"] });
-    const rows = computeGraph(graph);
+    expect(graph.find((g) => g.id === "m")).toMatchObject({ id: "m", parents: ["base"], dashed: [true] });
+    expect(graph.find((g) => g.id === "t")).toMatchObject({ id: "t", parents: ["m"] });
+    const { rows } = computeGraph(graph);
     expect(rows[1]!.down.some((s) => s.dashed)).toBe(true);
     expect(rows[2]!.up.some((s) => s.dashed)).toBe(true);
+  });
+
+  it("keeps the dashed links of a filtered log", () => {
+    // A user filter already linked y past hidden commits.
+    const commits = [
+      c("z", ["y"], ["main"]),
+      { ...c("y", ["x"], ["tag: v2"]), dashed: [true] },
+      c("x", [], ["tag: v1"]),
+    ];
+    const { graph } = collapseLinear(commits, new Set());
+    expect(graph.find((g) => g.id === "y")).toMatchObject({
+      id: "y",
+      parents: ["x"],
+      dashed: [true],
+      edgeTypes: ["filtered"],
+    });
+    expect(computeGraph(commits).rows[1]!.down.some((s) => s.dashed)).toBe(true);
   });
 
   it("keeps referenced and kept commits", () => {
@@ -57,7 +74,7 @@ describe("long edges", () => {
   it("hides the middle of a long straight lane and puts arrows on the stubs", () => {
     // t's parent p is 40 rows below; the commits in between sit in lane 0.
     const between = Array.from({ length: 40 }, (_, i) => c(`x${i}`, i < 39 ? [`x${i + 1}`] : []));
-    const rows = computeGraph([c("t", ["p"]), ...between, c("p")]);
+    const { rows } = computeGraph([c("t", ["p"]), ...between, c("p")]);
     const hidden = hideLongEdges(rows);
     // The x chain sits in lane 1; the edge t → p passes through lane 0.
     const lane0 = (r: (typeof rows)[number]) => r.up.concat(r.down).filter((s) => s.from === 0 && s.to === 0);

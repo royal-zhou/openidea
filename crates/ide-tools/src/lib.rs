@@ -8,6 +8,12 @@
 //!
 //! Language servers find managed tools once [`extend_process_path`] has put
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
+//!
+//! GitHub API downloads prefer `GITHUB_TOKEN`, then `GH_TOKEN`, then the active
+//! `github.com` account from `gh auth token --hostname github.com`. The CLI is
+//! optional; absent credentials retain anonymous downloads. Tokens are passed
+//! to curl over stdin, never stored in tool manifests or command arguments, and
+//! are not sent to other download origins. CLI lookup is cancellable and bounded.
 
 pub mod archive;
 mod bundled;
@@ -389,6 +395,11 @@ pub fn parse_version(text: &str) -> Option<String> {
     None
 }
 
+/// A Windows App Execution Alias (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`).
+fn is_app_execution_alias(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name).is_some_and(|d| d.eq_ignore_ascii_case("WindowsApps"))
+}
+
 /// A tool whose "command" is a plugin jar (e.g. a jdtls bundle) rather than an executable.
 fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
@@ -472,8 +483,45 @@ impl Tools {
         cmd
     }
 
+    /// `python` started in an empty private directory: Python puts the working directory
+    /// first on `sys.path` for `-c` / `-m`, and the IDE's own (inherited from wherever it
+    /// was launched, e.g. a project) could hold modules that shadow the standard library,
+    /// pip or the tool being probed. Not `-I`: that also hides `pip install --user` packages.
+    fn python_command(&self, python: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(python);
+        let dir = self.root.join(".python-cwd");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
+    /// The interpreter that installs and probes Python tools. Windows installs `python.exe`
+    /// and the `py` launcher, not `python3.exe`; its `WindowsApps` entries are App Execution
+    /// Aliases that only open the Store unless the Store's Python is installed, so they count
+    /// only when they run.
     fn python(&self) -> Option<PathBuf> {
-        self.which_any(&["python3", "python"])
+        if self.platform.os != Os::Windows {
+            return self.which_any(&["python3", "python"]);
+        }
+        ["python", "py", "python3"]
+            .into_iter()
+            .flat_map(|command| {
+                std::env::split_paths(&self.system_path).filter_map(move |dir| {
+                    if dir.as_os_str().is_empty() {
+                        return None;
+                    }
+                    let search = std::env::join_paths([dir]).ok()?;
+                    ide_core::tool_path::find_command(command, &search, &self.root)
+                })
+            })
+            .find(|p| {
+                !is_app_execution_alias(p) || {
+                    let mut c = self.python_command(p);
+                    c.arg("--version");
+                    run_quiet(c, Duration::from_secs(5)).is_some_and(|(ok, _)| ok)
+                }
+            })
     }
 
     /// Executable `cmd` inside `dir`, honouring Windows suffixes.
@@ -538,6 +586,15 @@ impl Tools {
             .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
             .is_some();
         if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
+    }
+
+    /// [`Method::label`], naming the installer that will actually run: a virtualenv is
+    /// made with uv when it is on `PATH` (see `install_venv`).
+    fn method_label(&self, method: Method) -> &'static str {
+        match method {
+            Method::PipVenv { .. } if self.which("uv").is_some() => "uv (virtualenv)",
+            m => m.label(),
+        }
     }
 
     /// Requirement check for installing `spec` right now.
@@ -624,7 +681,7 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(self.install_method(spec).label().to_string()),
+            install_method: Some(self.method_label(self.install_method(spec)).to_string()),
             can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
@@ -699,7 +756,7 @@ impl Tools {
                 }
                 // Importable by the default interpreter (pip install --user / a system package).
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::OnPath, Some(python), parse_version(&out)),
@@ -708,7 +765,7 @@ impl Tools {
             }
             Method::PipUser { module, .. } => {
                 let Some(python) = self.python() else { return (ToolStatus::Missing, None, None) };
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-c", &format!("import {module}; print({module}.__version__)")]);
                 match run_quiet(c, Duration::from_secs(5)) {
                     Some((true, out)) => (ToolStatus::Installed, Some(python), parse_version(&out)),
@@ -796,7 +853,9 @@ impl Tools {
         let result = (|| {
             std::fs::create_dir_all(&self.root)?;
             let method = self.install_method(spec);
-            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            emit(InstallEvent::Line {
+                text: format!("Installing {} via {}…", spec.display, self.method_label(method)),
+            });
             match method {
                 Method::Bundled { .. } => {
                     bundled::install(&self.root, spec)?;
@@ -999,10 +1058,10 @@ impl Tools {
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
                 run_streamed(c, cancel, emit)?;
             } else {
-                let mut c = self.command(self.python().expect("checked"));
+                let mut c = self.python_command(self.python().expect("checked"));
                 c.args(["-m", "venv"]).arg(&venv);
                 run_streamed(c, cancel, emit)?;
-                let mut c = self.command(&python);
+                let mut c = self.python_command(&python);
                 c.args(["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", package]);
                 run_streamed(c, cancel, emit)?;
             }
@@ -1021,7 +1080,7 @@ impl Tools {
     fn install_pip_user(&self, package: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let python = self.python().expect("checked");
         let pip = |extra: &[&str]| {
-            let mut c = self.command(&python);
+            let mut c = self.python_command(&python);
             c.args(["-m", "pip", "install", "--user", "--upgrade", "--disable-pip-version-check"])
                 .args(extra)
                 .arg(package);
@@ -1058,7 +1117,7 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.command(self.python().expect("checked"));
+        let mut c = self.python_command(self.python().expect("checked"));
         c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
@@ -1218,7 +1277,7 @@ impl Tools {
             Method::PipUser { package, .. } => {
                 let python = self.python().ok_or_else(|| IdeError::unavailable("python3 not found"))?;
                 let pip = |extra: &[&str]| {
-                    let mut c = self.command(&python);
+                    let mut c = self.python_command(&python);
                     c.args(["-m", "pip", "uninstall", "-y", "--disable-pip-version-check"]).args(extra).arg(package);
                     run_collect(c, &cancel, &quiet)
                 };

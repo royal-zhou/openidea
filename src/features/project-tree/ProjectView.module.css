@@ -6,6 +6,15 @@
   flex-direction: column;
 }
 
+.unityNotice {
+  flex: none;
+  padding: 8px 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--border);
+}
+
 .content {
   flex: 1;
   min-width: 0;
@@ -37,12 +46,17 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
-/* IDEA: ignored / excluded names use the ignored colour. No row wash — that reads as a selection and blends into the excluded-folder icon. */
+.moduleLabel {
+  font-weight: 600;
+}
+/* IDEA's "excluded" look: ignored / excluded entries are dimmed. */
 .excluded {
   color: var(--vcs-ignored);
 }
 .error {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }

@@ -22,8 +22,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { buildBranchTree, filterBranchTree } from "../branches";
 import { buildFileTree } from "../fileTree";
 import { filesUnder, filterPatch, flatFileNodes, toLogChanges, useLogChanges } from "../logChanges";
-import { canDeleteBranch, canUpdateBranch, registerLogPaneActions, useBranchesPane } from "../logPaneActions";
-import { setContext } from "@/platform/context";
+import { canDeleteBranch, canUpdateBranch, useBranchesPane } from "../logPaneActions";
 import { BranchesPanel, CommitDetails, changesMenu, graphOptionsMenu } from "../GitLog";
 import { LogSettingsPage } from "../LogSettingsPage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
@@ -149,56 +148,6 @@ describe("Branches pane", () => {
     expect(canUpdateBranch({ ref: "feature", branch: tracked })).toBe(true);
     expect(canUpdateBranch({ ref: "x", branch: b("x") })).toBe(false);
     expect(canUpdateBranch({ ref: "origin/x", branch: b("origin/x", { remote: true }) })).toBe(false);
-  });
-
-  it("lists refs flat, without folders, when Group by Folder is off", () => {
-    const branches = [
-      b("main", { current: true }),
-      b("feature/login"),
-      b("feature/pay"),
-      b("origin/main", { remote: true }),
-    ];
-    const grouped = buildBranchTree(branches, null);
-    expect(grouped.find((n) => n.key === "g:local")!.children!.map((n) => [n.kind, n.label])).toEqual([
-      ["branch", "main"],
-      ["folder", "feature"],
-    ]);
-
-    const flat = buildBranchTree(branches, null, [], true);
-    expect(flat.find((n) => n.key === "g:local")!.children!.map((n) => [n.kind, n.label, n.ref])).toEqual([
-      ["branch", "main", "main"],
-      ["branch", "feature/login", "feature/login"],
-      ["branch", "feature/pay", "feature/pay"],
-    ]);
-    // Remote rows keep their remote in the name: no `origin` folder remains.
-    expect(flat.find((n) => n.key === "g:remote")!.children![0]!.children!.map((n) => n.label)).toEqual([
-      "origin/main",
-    ]);
-  });
-
-  it("switches between folders and a flat list from the pane", async () => {
-    const dispose = registerLogPaneActions();
-    setContext("vcsAvailable", true);
-    useVcs.setState({
-      root: "/p",
-      repo: "/p",
-      branchesLoaded: true,
-      branches: [b("main", { current: true }), b("feature/login")],
-      branch: { head: "main", headCommit: "1", upstream: null, ahead: 0, behind: 0, operation: null },
-    });
-    useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS, branchFolders: false });
-    const { rerender } = render(<BranchesPanel />);
-    expect(await screen.findByRole("treeitem", { name: /feature\/login/ })).toBeInTheDocument();
-    expect(screen.queryByRole("treeitem", { name: "^feature$" })).toBeNull();
-
-    const toggle = screen.getByRole("button", { name: "Group Branches by Folder" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(toggle);
-    expect(useLogOptions.getState().branchFolders).toBe(true);
-    rerender(<BranchesPanel />);
-    expect(await screen.findByRole("treeitem", { name: /^feature$/ })).toBeInTheDocument();
-    setContext("vcsAvailable", undefined);
-    dispose();
   });
 
   it("has a vertical toolbar acting on the selected branch, and shows tags", async () => {

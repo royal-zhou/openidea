@@ -48,11 +48,13 @@ import {
   type DeclarationTarget,
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
+import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
-import { identifierAt, readManyFileLines } from "./files";
+import { readManyFileLines, targetLabel } from "./files";
 import {
   documentLinks,
   followReference,
+  fragmentOffset,
   isExtensionlessRelativePath,
   isFile,
   isPackageImportBinding,
@@ -124,13 +126,13 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         run: () => navigateTo(l),
       };
     // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = identifierAt(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
       detail: name ? `${basename(l.path)} · ${where}` : where,
       preview,
-      icon: fileIconName(basename(l.path)),
+      icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),
     };
   });
@@ -277,7 +279,16 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
     )
       return;
-    showHint(view, serverDown ? `${NOT_FOUND[kind]}: no language server is running for this file` : NOT_FOUND[kind]);
+    // The server only checks this file's syntax: say why instead of just "not found".
+    const reason = serverDown ? null : outsideProjectReason(doc.path);
+    showHint(
+      view,
+      serverDown
+        ? `${NOT_FOUND[kind]}: no language server is running for this file`
+        : reason
+          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+          : NOT_FOUND[kind],
+    );
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages.
@@ -370,6 +381,14 @@ async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset
   const ref = await referenceAt(view, doc, offset);
   if (!ref) return false;
   try {
+    if (ref.kind === "file" && ref.path === doc.path && ref.fragment) {
+      const target = fragmentOffset(view.state.doc.toString(), doc.path, ref.fragment);
+      if (target !== null) {
+        view.dispatch({ selection: EditorSelection.cursor(target), effects: EditorView.scrollIntoView(target) });
+        view.focus();
+        return true;
+      }
+    }
     await followReference(ref);
   } catch (e) {
     showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });

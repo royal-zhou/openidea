@@ -135,9 +135,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
@@ -211,19 +209,27 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "menu_model"
             | "menu_configure"
             | "menu_set_disabled"
+            | "prepare_workspace_edit"
+            | "apply_workspace_edit"
+            | "undo_workspace_edit"
+            | "redo_workspace_edit"
             | "lsp_servers"
             | "lsp_resend_diagnostics"
             | "recent_projects"
             | "remove_recent_project"
+            | "recent_project_groups"
+            | "set_recent_project_groups"
             | "open_project"
             | "close_project"
             | "project_current"
             | "project_roots"
             | "index_status"
+            | "index_file_extensions"
             | "jvm_file_presentations"
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_dirs"
             | "find_symbols"
             | "mark_recent"
             | "remove_recent"
@@ -245,6 +251,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_disconnect"
             | "remote_connect"
             | "remote_bootstrap_list"
+            | "wsl_distros"
+            | "wsl_resolve"
             | "remote_list"
             | "remote_open"
             | "remote_of"
@@ -271,6 +279,16 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme"
             | "plugin_set_theme_frame"
             | "plugin_catalog"
+            | "plugin_assets"
+            | "plugin_market"
+            | "plugin_market_url"
+            | "plugin_set_market_url"
+            | "plugin_market_download"
+            | "plugin_unpack_package"
+            | "plugin_stage_package"
+            | "plugin_preview_install"
+            | "plugin_read_intellij_theme"
+            | "plugin_installed_intellij_themes"
             | "notebook_open"
             | "notebook_get"
             | "notebook_edit"
@@ -293,7 +311,16 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_file_at"
             | "vcs_read_image"
             | "vcs_blame"
+            | "vcs_block_history"
             | "vcs_log"
+            | "vcs_log_refs"
+            | "vcs_log_users"
+            | "vcs_log_details"
+            | "vcs_log_details_batch"
+            | "vcs_log_index"
+            | "vcs_revision_children"
+            | "vcs_revision_files"
+            | "vcs_open_external_log"
             | "vcs_commit_files"
             | "vcs_commits_changes"
             | "vcs_branches"
@@ -317,12 +344,31 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
     ) || cmd.starts_with("plugin:")
 }
 
+/// Commands that change which plugin code runs: allowed where no project is open (the
+/// welcome screen), otherwise only in a trusted project.
+pub fn projectless_command_allowed(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "plugin_install_dir"
+            | "plugin_uninstall"
+            | "plugin_set_enabled"
+            | "plugin_grant"
+            | "plugin_set_capability"
+            | "plugin_roll_back"
+            | "plugin_reload"
+    )
+}
+
 impl crate::Host {
     pub fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
         if restricted_command_allowed(command) {
             return Ok(());
         }
-        self.project(window)?.require_trust()
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) if projectless_command_allowed(command) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 

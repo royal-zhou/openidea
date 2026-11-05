@@ -3,12 +3,27 @@ import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import { activateFeatures, activateSettingsWindowFeatures, SettingsWindow, settingsWindowParent } from "./features";
+import {
+  activateComparisonWindowFeatures,
+  activateDeploymentWindowFeatures,
+  activateFeatures,
+  activateSettingsWindowFeatures,
+  ComparisonWindow,
+  DeploymentWindow,
+  SettingsWindow,
+} from "./features";
+import { auxiliaryWindow } from "./platform/auxWindow";
+import { installRepeatedDoubleClick } from "./platform/doubleClick";
+import { installErrorLogging } from "./platform/errorLog";
+import { guessOs } from "./platform/platformInfo";
+import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
+import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
 import { primeLocale } from "./features/app/locale";
+import { installWindowDrag } from "./workbench/window-drag";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -17,16 +32,30 @@ if (import.meta.env.DEV && isTauri()) {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ ??= { core: { invoke }, event: { emit } };
 }
 
-// The native Settings window (`settings-<parent>`) loads this page too.
-const settingsParent = settingsWindowParent();
+installRepeatedDoubleClick();
+// WebKit only (bug 219670). In Chromium (the e2e browser) a scripted double-click stamps its
+// second press like the release before it, which the shim would take for a reordered tap and
+// click twice.
+if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
+installWindowDrag();
+installPointerFocus();
+installErrorLogging();
 
-// Apply the stored language (default: the OS language) before the first render, so a
-// Chinese system does not flash English while settings load.
 await primeLocale();
 
-if (settingsParent !== null) {
+// Auxiliary windows (Settings, comparisons and Sync with Deployed) load this page too.
+const aux = auxiliaryWindow();
+
+if (aux?.kind === "settings") {
   activateSecondaryWindow();
-  activateSettingsWindowFeatures(settingsParent);
+  activateSettingsWindowFeatures(aux.parent);
+} else if (aux?.kind === "comparison") {
+  activateSecondaryWindow();
+  activateComparisonWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
+} else if (aux?.kind === "deployment") {
+  activateSecondaryWindow();
+  activateDeploymentWindowFeatures(aux.parent);
 } else {
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
@@ -46,8 +75,18 @@ if (settingsParent !== null) {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</React.StrictMode>,
+  <React.StrictMode>
+    {aux?.kind === "settings" ? (
+      <SettingsWindow />
+    ) : aux?.kind === "comparison" ? (
+      <ComparisonWindow />
+    ) : aux?.kind === "deployment" ? (
+      <DeploymentWindow />
+    ) : (
+      <Workbench />
+    )}
+  </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.
-if (settingsParent === null) prefetchLazyComponents();
+if (!aux) prefetchLazyComponents();

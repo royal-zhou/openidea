@@ -3,11 +3,13 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
+import { formatBinding, isMacHost } from "@/platform/keymap";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { dirname } from "@/platform/project";
+import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
   Button,
   Checkbox,
@@ -32,17 +34,20 @@ import {
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
   buildChangeTree,
   checkOf,
   filesOf,
+  groupFileNodes,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
   stagingNodeChecked,
   stagingPlan,
   stagingToggle,
+  stagingSide,
   toggledCheck,
   withStagedChecks,
   type ChangeNode,
@@ -50,6 +55,7 @@ import {
 import {
   applyStash,
   commitChanges,
+  deleteUnversioned,
   dropStash,
   isNewFile,
   rollbackCandidates,
@@ -59,10 +65,19 @@ import {
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
-import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import {
+  messageHistory,
+  setAmend,
+  setDiffPreview,
+  setGroupByDir,
+  setGroupByStaging,
+  useCommit,
+  type CommitTab,
+} from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
+import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
@@ -178,13 +193,9 @@ const bottomLeft = (el: HTMLElement) => {
 /** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
 function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   if (n.type !== "file" || !n.path) return;
-  const group = roots.find((g) => g.files.some((f) => f.path === n.files[0]?.path)) ?? null;
-  const paths: string[] = [];
-  const walk = (ns: readonly ChangeNode[]) =>
-    ns.forEach((x) => (x.type === "file" ? x.path && paths.push(x.path) : walk(x.children ?? [])));
-  walk(group ? [group] : [n]);
-  const items = paths.map((p) => workingDiffData(p));
-  void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
+  const nodes = groupFileNodes(roots, n);
+  const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
+  void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -237,8 +248,15 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
   ];
 }
 
-function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+/** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
+export function deletableUnversioned(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
+  return files.length && files.every((f) => f.unstaged === "untracked") ? files.map((f) => f.path) : [];
+}
+
+export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+  const files = filesOf(nodes);
+  const deletable = deletableUnversioned(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
@@ -260,11 +278,23 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
     ...(rollbackCandidates(undefined, files, repos).length
       ? [{ kind: "action" as const, action: "vcs.rollback", arg: paths, label: "Rollback…" }]
       : []),
-    ...(files.length && files.every(isNewFile)
+    ...(!deletable.length && files.length && files.every(isNewFile)
       ? [{ kind: "action" as const, action: "vcs.delete", arg: paths, label: "Delete…" }]
       : []),
     ...(untracked.length
-      ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      ? [
+          { kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) },
+          ...(deletable.length
+            ? [
+                {
+                  label: "Delete…",
+                  icon: "trash",
+                  shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
+                  run: () => void deleteUnversioned(deletable),
+                },
+              ]
+            : []),
+        ]
       : []),
     ...(toIgnore.length
       ? [
@@ -380,6 +410,37 @@ function ChangesPanel() {
 }
 
 /**
+ * The Git window's Local Changes tab: a diff preview beside the tree when
+ * bottom-docked, below it when side-docked (off via View Options › Show Diff Preview).
+ */
+export function LocalChangesView() {
+  const preview = useCommit((s) => s.diffPreview);
+  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
+  return (
+    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
+      <SplitPanel defaultSize="50%" minSize="20%">
+        <ChangesTree mode="local" />
+      </SplitPanel>
+      {preview && (
+        <>
+          <SplitHandle />
+          <SplitPanel defaultSize="50%" minSize="120px">
+            {path ? (
+              <DiffEditor input={diffInput(workingDiffData(path))} />
+            ) : (
+              <EmptyState>
+                <T>Select a file to preview its changes</T>
+              </EmptyState>
+            )}
+          </SplitPanel>
+        </>
+      )}
+    </SplitGroup>
+  );
+}
+
+/**
  * The change tree with its toolbar. `commit`: the Commit tool window's (inclusion
  * checkboxes); `local`: the Git tool window's Local Changes tab of the modal commit
  * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
@@ -388,6 +449,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
+  const groupByStaging = useCommit((s) => s.groupByStaging);
+  const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -400,9 +463,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
 
   const repos = useVcs((s) => s.roots);
   const staging = useWorkflowSettings((s) => s.vcs.git.stagingArea);
+  const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, staging ? undefined : lists, repos, staging),
-    [status, root, groupByDir, lists, repos, staging],
+    () => buildChangeTree(status, root, groupByDir, staging ? undefined : lists, repos, groupByStaging, staging),
+    [status, root, groupByDir, lists, repos, groupByStaging, staging],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -496,6 +560,13 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
+              ...(mode === "local"
+                ? [
+                    { kind: "separator" } as const,
+                    { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
+                  ]
+                : []),
             ])
           }
         />
@@ -524,14 +595,19 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               : nodes.find((n) => n.group !== "staged" && n.group !== "conflicts");
             if (clicked) toggle(clicked, nodes);
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
-            const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
+            const nodes = selectedNodes();
+            const group = nodes.find((x) => x.type === "group" && x.changelist);
+            const deletable = group ? [] : deletableUnversioned(nodes);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
               void executeAction("vcs.changelist.delete", group.changelist);
+            } else if (deletable.length) {
+              e.preventDefault();
+              e.stopPropagation();
+              void deleteUnversioned(deletable);
             } else {
-              // New files (unversioned or added) are deleted from disk: nothing to roll back.
-              const files = filesOf(selectedNodes());
+              const files = filesOf(nodes);
               if (files.length && files.every(isNewFile)) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -557,6 +633,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           getLabel={nodeText}
           getDirectory={(n) => (n.path && n.type !== "group" ? (n.type === "dir" ? n.path : dirname(n.path)) : null)}
           getChildren={(n) => n.children}
+          rowClassName={(n) =>
+            n.type !== "group" && n.path && isTestFile(n.path, projectRoots) ? styles.testFile : undefined
+          }
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}
           onExpandedChange={(_next, node, open) =>
