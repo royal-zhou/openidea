@@ -145,10 +145,12 @@ fn repository_without_commits() {
     assert_eq!(status_of(&st, "new.txt").staged, Some(ChangeKind::Added));
     assert_eq!(status_of(&st, "new.txt").unstaged, None);
 
+    fx.write("new.txt", "edited after staging\n");
     repo.unstage(&[fx.path("new.txt")]).unwrap();
     let st = repo.status().unwrap();
     assert_eq!(status_of(&st, "new.txt").staged, None);
     assert_eq!(status_of(&st, "new.txt").unstaged, Some(ChangeKind::Untracked));
+    assert_eq!(fx.read("new.txt"), "edited after staging\n");
 
     repo.stage(&[PathBuf::from("new.txt")]).unwrap();
     let id = repo.commit("first", false, false).unwrap();

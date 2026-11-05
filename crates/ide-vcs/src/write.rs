@@ -235,7 +235,9 @@ pub(crate) fn unstage(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
     if r.has_head()? {
         run_paths(r, &["restore", "--staged"], &rel)
     } else {
-        run_paths(r, &["rm", "--cached", "-r", "-q", "--ignore-unmatch"], &rel)
+        // With no HEAD, rm otherwise rejects an added file edited after staging.
+        // Force the index removal while keeping the working copy.
+        run_paths(r, &["rm", "--cached", "-f", "-r", "-q", "--ignore-unmatch"], &rel)
     }
 }
 

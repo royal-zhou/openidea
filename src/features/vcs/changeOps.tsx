@@ -309,19 +309,29 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [deleteAdded, setDeleteAdded] = useState(false);
   const hasAdded = files.some((f) => f.staged === "added");
+  const chosen = files.filter((f) => selected.has(f.path));
+  const added = chosen.filter((f) => f.staged === "added").length;
+  const restored = chosen.length - added;
+  const addedOutcome = deleteAdded
+    ? tx`Added files to delete: ${added}`
+    : tx`Added files to keep as untracked: ${added}`;
   const run = async () => {
-    const chosen = files.filter((f) => selected.has(f.path));
     onClose();
     if (!chosen.length) return;
     await saveAll();
     const { unstage, discard } = rollbackPlan(chosen, deleteAdded);
+    const outcomes = [];
+    if (restored) outcomes.push(tx`Changes rolled back: ${restored}`);
+    if (added) {
+      outcomes.push(deleteAdded ? tx`Added files deleted: ${added}` : tx`Added files kept as untracked: ${added}`);
+    }
     await runOp(
       "Rollback",
       async () => {
         if (unstage.length) await call(commands.vcsUnstage(unstage));
         if (discard.length) await call(commands.vcsDiscard(discard));
       },
-      { success: `Rolled back ${chosen.length} file${chosen.length === 1 ? "" : "s"}` },
+      { success: outcomes.join(" · ") },
     );
   };
   return (
@@ -332,7 +342,12 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
       width={520}
       footerStart={
         hasAdded && (
-          <Checkbox checked={deleteAdded} onChange={setDeleteAdded} label="Delete local copies of added files" />
+          <Checkbox
+            checked={deleteAdded}
+            disabled={!added}
+            onChange={setDeleteAdded}
+            label="Delete local copies of added files"
+          />
         )
       }
       buttons={[
@@ -341,9 +356,9 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
       ]}
     >
       <div className={styles.section}>
-        {files.length === 1
-          ? tx`${selected.size} of ${files.length} file will be reverted to their last committed state. Uncommitted changes are lost.`
-          : tx`${selected.size} of ${files.length} files will be reverted to their last committed state. Uncommitted changes are lost.`}
+        <div>{tx`Selected files: ${selected.size} of ${files.length}`}</div>
+        {!!restored && <div>{tx`Files to restore to the last commit: ${restored}`}</div>}
+        {!!added && <div>{addedOutcome}</div>}
       </div>
       <div className={styles.fileList} role="group" aria-label={tx("Files to roll back")}>
         {files.map((f) => {

@@ -47,7 +47,15 @@ import {
   withStagedChecks,
   type ChangeNode,
 } from "./changes";
-import { applyStash, commitChanges, dropStash, isNewFile, showUnstashDialog, stashChanges } from "./changeOps";
+import {
+  applyStash,
+  commitChanges,
+  dropStash,
+  isNewFile,
+  rollbackCandidates,
+  showUnstashDialog,
+  stashChanges,
+} from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
@@ -197,8 +205,13 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
     { kind: "separator" },
     // The whole list's files, as IDEA offers on a change list's header and as file
     // and directory nodes below it already offer (issue #473).
-    { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…", disabled: !count },
-    // New files have no committed version to roll back to; they are deleted instead.
+    {
+      kind: "action",
+      action: "vcs.rollback",
+      arg: paths,
+      label: "Rollback…",
+      disabled: !rollbackCandidates(undefined, files).length,
+    },
     ...(count && files.every(isNewFile)
       ? [{ kind: "action" as const, action: "vcs.delete", arg: paths, label: "Delete…" }]
       : []),
@@ -244,7 +257,9 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   ];
   if (conflicted.length) items.push({ kind: "action", action: "vcs.resolveConflicts", label: "Resolve Conflicts…" });
   items.push(
-    { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
+    ...(rollbackCandidates(undefined, files, repos).length
+      ? [{ kind: "action" as const, action: "vcs.rollback", arg: paths, label: "Rollback…" }]
+      : []),
     ...(files.length && files.every(isNewFile)
       ? [{ kind: "action" as const, action: "vcs.delete", arg: paths, label: "Delete…" }]
       : []),
@@ -452,6 +467,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const selectedNodes = () => [...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
   // Delete applies to new files only: they have no committed state to roll back to.
   const selectedFiles = filesOf(selectedNodes());
+  const selectedPaths = selectedFiles.map((f) => f.path);
   const deletable = selectedFiles.length > 0 && selectedFiles.every(isNewFile);
 
   return (
@@ -459,8 +475,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Changes")}>
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
         {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
-        <IconButton icon="undo" action="vcs.rollback" size="small" />
-        <IconButton icon="trash" action="vcs.delete" size="small" disabled={!deletable} />
+        <IconButton
+          icon="undo"
+          action="vcs.rollback"
+          actionArg={selectedPaths}
+          size="small"
+          disabled={!!selectedFiles.length && !rollbackCandidates(undefined, selectedFiles, repos).length}
+        />
+        <IconButton icon="trash" action="vcs.delete" actionArg={selectedPaths} size="small" disabled={!deletable} />
         {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
         {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
         <IconButton

@@ -18,6 +18,7 @@ import { checkoutRevision, newBranch, newBranchInRepos } from "./branchOps";
 import {
   addToVcs,
   commitChanges,
+  isNewFile,
   isNestedRepoEntry,
   rollbackCandidates,
   showRollbackDialog,
@@ -45,7 +46,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName } from "./store";
+import { refreshNow, repoName, statusOf } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -285,9 +286,6 @@ export function registerVcsActions(): () => void {
       keywords: ["revert", "discard"],
       run: ({ arg }) => {
         const explicit = argPaths(arg);
-        // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
-        const ed = activeEditor();
-        if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
         const sel = useCommit.getState().selection;
         const paths = explicit?.length ? explicit : commitWindowFocused() && sel.length ? sel : undefined;
         if (paths) {
@@ -303,6 +301,14 @@ export function registerVcsActions(): () => void {
           return showRollbackDialog(candidates);
         }
         const active = maybeEditorService()?.activePath();
+        const ed = activeEditor();
+        if (ed?.view.hasFocus) {
+          const file = active ? statusOf(active) : undefined;
+          // New files need the file-level confirmation, including the choice
+          // to keep the working copy when undoing an addition.
+          if (file && isNewFile(file)) return showRollbackDialog(rollbackCandidates([file.path]));
+          if (rollbackSelectedLines(ed.view)) return;
+        }
         const activeChanged = active ? rollbackCandidates([active]) : [];
         showRollbackDialog(activeChanged.length ? activeChanged : rollbackCandidates());
       },

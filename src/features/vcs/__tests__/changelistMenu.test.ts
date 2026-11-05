@@ -48,12 +48,18 @@ describe("change list header menu", () => {
     expect(actionsOf(listMenu("list-1", true, files))).not.toContain("vcs.changelist.delete");
   });
 
-  it("offers Delete instead of Rollback for a list of new files", () => {
+  it("offers Delete and disables Rollback for untracked files", () => {
     const newFiles = [fs("u1.txt", null, "untracked"), fs("u2.txt", null, "untracked")];
     const menu = listMenu("unversioned", true, newFiles);
     expect(actions(menu).find((a) => a.action === "vcs.delete")?.arg).toEqual(["/p/u1.txt", "/p/u2.txt"]);
+    expect(actions(menu).find((a) => a.action === "vcs.rollback")?.disabled).toBe(true);
     // A list with tracked changes has a committed state to roll back to; no Delete.
     expect(actions(listMenu("list-1", false, files)).map((a) => a.action)).not.toContain("vcs.delete");
+  });
+
+  it("enables Rollback for a staged addition", () => {
+    const menu = listMenu("list-1", true, [fs("added.txt", "added", "modified")]);
+    expect(actions(menu).find((a) => a.action === "vcs.rollback")?.disabled).toBe(false);
   });
 
   it("disables the operations nothing applies to in an empty list", () => {
