@@ -486,6 +486,7 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	/**  Image at `rev` as a `data:` URL. `None` when that revision has no such file. */
 	vcsReadImage: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_read_image", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	/**
@@ -3876,7 +3877,10 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
-	/**  Commit from the index (Staged / Unstaged groups). Off uses change-list checkboxes. */
+	/**
+	 *  Commit from the index (Staged / Unstaged groups in the Commit window), as in
+	 *  IDEA's staging area; off commits from the change-list checkboxes.
+	 */
 	stagingArea?: boolean,
 };
 
