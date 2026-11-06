@@ -75,10 +75,11 @@ import {
   type CommitTab,
 } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
+import { openMergeEditor } from "./conflictsUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
-import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
@@ -190,9 +191,13 @@ const bottomLeft = (el: HTMLElement) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
+/** Opens the merge editor for conflicts, or a diff chain for other changes. */
 function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   if (n.type !== "file" || !n.path) return;
+  if (n.group === "conflicts") {
+    openMergeEditor(n.path);
+    return;
+  }
   const nodes = groupFileNodes(roots, n);
   const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
   void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
@@ -416,6 +421,7 @@ function ChangesPanel() {
 export function LocalChangesView() {
   const preview = useCommit((s) => s.diffPreview);
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const file = useVcs((s) => (path ? s.byPath.get(stripSlash(path)) : undefined));
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   return (
     <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
@@ -426,7 +432,16 @@ export function LocalChangesView() {
         <>
           <SplitHandle />
           <SplitPanel defaultSize="50%" minSize="120px">
-            {path ? (
+            {path && file && effectiveKind(file) === "conflicted" ? (
+              <EmptyState
+                title="File has unresolved merge conflicts"
+                actions={
+                  <Button onClick={() => openMergeEditor(path)}>
+                    <T>Resolve conflicts…</T>
+                  </Button>
+                }
+              />
+            ) : path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
               <EmptyState>
@@ -647,13 +662,22 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             })
           }
           selected={selected}
-          onSelectionChange={(sel) => {
+          onSelectionChange={(sel, lead) => {
             setSelected(sel);
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
             useCommit.setState({
               selection: filesOf(nodes).map((f) => f.path),
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
+            if (
+              mode === "commit" &&
+              lead?.group === "conflicts" &&
+              lead.type === "file" &&
+              lead.path &&
+              sel.size === 1 &&
+              sel.has(lead.key)
+            )
+              openMergeEditor(lead.path, false);
           }}
           onActivate={(n) => openNode(n, roots)}
           onContextMenu={(node, sel, e: MouseEvent) => {

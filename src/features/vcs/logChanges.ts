@@ -221,7 +221,7 @@ export async function getFromRevision(changes: readonly LogChange[]) {
         const text = await call(commands.vcsFileAt(path, c.after));
         if (text === null) continue;
         if ((await readWorkingText(path)) === null) await call(commands.fsCreateFile(path));
-        await writeFileText(path, text, { save: true });
+        await writeFileText(path, text);
       }
       return changes.length;
     },

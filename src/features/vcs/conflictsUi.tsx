@@ -24,8 +24,8 @@ export function showConflictsDialog() {
   openDialog((close) => <ConflictsDialog onClose={close} />);
 }
 
-export function openMergeEditor(path: string) {
-  void editorService().openInput(mergeInput(stripSlash(path)), { focus: true });
+export function openMergeEditor(path: string, focus = true) {
+  void editorService().openInput(mergeInput(stripSlash(path)), { focus });
 }
 
 async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
@@ -39,7 +39,7 @@ async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
         // The file was deleted on that side: resolving means removing it.
         await call(commands.fsDelete(path));
       } else {
-        await writeFileText(path, text, { save: true });
+        await writeFileText(path, text);
       }
       await call(commands.vcsStage([path]));
     },

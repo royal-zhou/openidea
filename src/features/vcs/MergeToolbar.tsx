@@ -1,5 +1,6 @@
 /** The merge editor's toolbar and the buttons along its bottom, after IntelliJ's merge dialog. */
 import clsx from "clsx";
+import type { MouseEvent } from "react";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { Button, IconButton, T } from "@/ui";
@@ -17,9 +18,14 @@ function statusText({ pending, conflicts }: MergeSummary) {
   return `${left}, ${conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`}`;
 }
 
+function focusCommandButton({ target }: MouseEvent<HTMLDivElement>) {
+  // WebKit may leave focus outside the editor when clicking a button.
+  if (target instanceof Element) target.closest("button")?.focus({ preventScroll: true });
+}
+
 export function MergeToolbar({ summary }: ToolbarProps) {
   return (
-    <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
+    <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")} onClickCapture={focusCommandButton}>
       <IconButton icon="arrow-up" title="Previous Change" action="diff.prevDifference" size="small" />
       <IconButton icon="arrow-down" title="Next Change" action="diff.nextDifference" size="small" />
       <span className={styles.sep} />
@@ -69,7 +75,7 @@ export function MergeToolbar({ summary }: ToolbarProps) {
 
 export function MergeFooter() {
   return (
-    <div className={styles.footer}>
+    <div className={styles.footer} data-merge-footer onClickCapture={focusCommandButton}>
       <div className={styles.footerGroup}>
         <Button onClick={() => void executeAction("merge.acceptYours")}>
           <T>Accept Yours</T>

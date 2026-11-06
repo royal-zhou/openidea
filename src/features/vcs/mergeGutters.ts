@@ -3,7 +3,7 @@
  * cross beside each change in the side panes, a magic wand beside a conflict of the
  * result that can be resolved without a decision, and the changes tinted in the result.
  */
-import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Prec, RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, type ViewUpdate } from "@codemirror/view";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
@@ -73,20 +73,20 @@ class SideMarker extends GutterMarker {
     box.className = "cm-merge-ops";
     const toward = this.side === "left" ? "right" : "left";
     const arrow = this.oneside ? `diff-arrow-${toward}-down` : `diff-arrow-${toward}`;
-    box.append(
-      button(
-        "cm-merge-op cm-merge-accept",
-        tx("Accept (hold the modifier key to resolve using this side)"),
-        arrow,
-        (e) => this.controls.accept(this.index, this.side, hasPrimaryModifier(e)),
-      ),
-      button(
-        "cm-merge-op cm-merge-ignore",
-        tx("Ignore (hold the modifier key to ignore both sides)"),
-        "diff-remove",
-        (e) => this.controls.ignore(this.index, this.side, hasPrimaryModifier(e)),
-      ),
+    const accept = button(
+      "cm-merge-op cm-merge-accept",
+      tx("Accept (hold the modifier key to resolve using this side)"),
+      arrow,
+      (e) => this.controls.accept(this.index, this.side, hasPrimaryModifier(e)),
     );
+    const ignore = button(
+      "cm-merge-op cm-merge-ignore",
+      tx("Ignore (hold the modifier key to ignore both sides)"),
+      "diff-remove",
+      (e) => this.controls.ignore(this.index, this.side, hasPrimaryModifier(e)),
+    );
+    if (this.side === "left") box.append(ignore, accept);
+    else box.append(accept, ignore);
     return box;
   }
 }
@@ -95,20 +95,23 @@ class SideMarker extends GutterMarker {
 export function sideControls(side: MergeSide, controls: MergeControls): Extension {
   return [
     sideChanges,
-    gutter({
-      class: "cm-merge-gutter",
-      lineMarker(view, line) {
-        const doc = view.state.doc;
-        const changes = view.state.field(sideChanges);
-        const index = changes.findIndex((c) => {
-          if (!changesSide(c, side) || c.done[side]) return false;
-          const from = (side === "left" ? c.leftRange : c.rightRange)[0];
-          return doc.lineAt(Math.min(from, doc.length)).from === line.from;
-        });
-        return index < 0 ? null : new SideMarker(index, side, changes[index]!.oneside, controls);
-      },
-      lineMarkerChange: (update) => update.transactions.some((tr) => tr.effects.some((e) => e.is(syncSide))),
-    }),
+    Prec.high(
+      gutter({
+        class: "cm-merge-gutter",
+        side: side === "left" ? "after" : "before",
+        lineMarker(view, line) {
+          const doc = view.state.doc;
+          const changes = view.state.field(sideChanges);
+          const index = changes.findIndex((c) => {
+            if (!changesSide(c, side) || c.done[side]) return false;
+            const from = (side === "left" ? c.leftRange : c.rightRange)[0];
+            return doc.lineAt(Math.min(from, doc.length)).from === line.from;
+          });
+          return index < 0 ? null : new SideMarker(index, side, changes[index]!.oneside, controls);
+        },
+        lineMarkerChange: (update) => update.transactions.some((tr) => tr.effects.some((e) => e.is(syncSide))),
+      }),
+    ),
   ];
 }
 

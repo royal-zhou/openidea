@@ -424,12 +424,6 @@ export function describeOperation(op: GitOperation): string {
 // ---------------------------------------------------------------------------
 // Working file text
 
-export interface TextEdit {
-  from: number;
-  to: number;
-  insert: string;
-}
-
 /** Current text of a working file: the open editor's buffer, else the file (read-only). */
 export async function readWorkingText(path: string): Promise<string | null> {
   const editor = editorsFor(path)[0];
@@ -441,54 +435,20 @@ export async function readWorkingText(path: string): Promise<string | null> {
   }
 }
 
-const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Applies edits (in the coordinates of `readWorkingText(path)`) to a working
- * file: through the open editor (one undoable transaction) or, when the file
- * isn't open, through a transient backend document that is saved.
- */
-export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean; exact?: boolean } = {}) {
-  const editor = editorsFor(path)[0];
-  if (editor) {
-    editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
-    if (opts.save) {
-      if (opts.exact) await saveExactText(path);
-      else {
-        // Let editor/core sync the change to the backend before saving.
-        await tick(60);
-        await maybeEditorService()?.saveAll();
-      }
-    }
-    return;
-  }
-  const info = await call(commands.docOpen(path));
-  try {
-    await call(commands.docEdit(info.id, info.version, { changes: [...edits].sort((a, b) => a.from - b.from) }));
-    await call(commands.docSave(info.id));
-  } finally {
-    void commands.docClose(info.id);
-  }
-}
-
-/** Replaces the whole content of a working file. */
-export async function writeFileText(path: string, text: string, opts: { save?: boolean; exact?: boolean } = {}) {
-  const current = (await readWorkingText(path)) ?? "";
-  if (current === text) {
-    if (opts.save) {
-      if (opts.exact) await saveExactText(path);
-      else await saveAll();
-    }
-    return;
-  }
-  await applyFileEdits(path, [{ from: 0, to: current.length, insert: text }], opts);
-}
-
-/** Merge results keep their text even when the file is also shown in an editor tab. */
-async function saveExactText(path: string) {
+/** Writes through the shared document so inactive tabs receive the edit too. */
+export async function writeFileText(path: string, text: string, opts: { exact?: boolean } = {}) {
   const document = await attachDocument(path);
   try {
-    await document.save({ exact: true });
+    if (document.readOnly) throw new Error(tx("The file is read-only"));
+    const current = document.text();
+    const insert = text.replace(/\r\n?/g, "\n");
+    if (current !== insert) {
+      const changes = { from: 0, to: current.length, insert };
+      const editor = editorsFor(path)[0];
+      if (editor) editor.view.dispatch({ changes, userEvent: "input.vcs", scrollIntoView: true });
+      else document.edit(changes, "input.vcs");
+    }
+    await document.save(opts);
   } finally {
     document.release();
   }
