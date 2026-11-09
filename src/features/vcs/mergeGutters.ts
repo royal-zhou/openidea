@@ -237,6 +237,8 @@ export function mergeStripe(pane: MergeSide | "result"): Extension {
 export const mergeTheme = EditorView.baseTheme({
   // A fixed width, so the text does not shift as controls come and go while scrolling.
   ".cm-merge-gutter": { minWidth: "34px" },
+  // The overview belongs at the edge of the text, beside the right-hand merge controls.
+  "&:has(.cm-gutters-after .cm-merge-gutter) .cm-openidea-overview": { right: "34px" },
   ".cm-merge-ops": { display: "flex", alignItems: "center", justifyContent: "center", height: "100%" },
   ".cm-merge-op": {
     display: "inline-flex",

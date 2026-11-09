@@ -33,7 +33,8 @@ test("terminal follows new output after a synchronized redraw clears the history
       await write("\r\nMore output");
       await frame();
       const whileReadingHistory = atBottom();
-      term.scrollToBottom();
+      term.scrollLines(term.buffer.active.length);
+      await frame();
       return { beforeRedraw, afterRedraw, whileReadingHistory, afterScrollDown: atBottom() };
     } finally {
       session.dispose();
