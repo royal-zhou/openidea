@@ -297,7 +297,11 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: {
       version: text(ts.version, d.typescript.version) || d.typescript.version,
       pathAliases: Array.isArray(ts.pathAliases)
-        ? [...new Set(ts.pathAliases.filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim()))]
+        ? [
+            ...new Set(
+              ts.pathAliases.filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim()),
+            ),
+          ]
         : d.typescript.pathAliases,
     },
     prettier: validateFormatter(l.prettier),
