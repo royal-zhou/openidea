@@ -239,7 +239,12 @@ export function DiffEditor({
   });
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({
-    count: 0, current: -1, added: 0, removed: 0, moves: 0, whitespaceOnly: false,
+    count: 0,
+    current: -1,
+    added: 0,
+    removed: 0,
+    moves: 0,
+    whitespaceOnly: false,
   });
   const lineTotals = useRef<{ chunks: readonly Chunk[]; added: number; removed: number }>(null);
   const [busy, setBusy] = useState(false);
@@ -353,8 +358,12 @@ export function DiffEditor({
     const { moves, whitespaceOnly } = getDiffInsights(chunks);
     const count = chunks.length;
     setChunkInfo((p) =>
-      p.count === count && p.current === current && p.added === added && p.removed === removed &&
-      p.moves === moves.length && p.whitespaceOnly === whitespaceOnly
+      p.count === count &&
+      p.current === current &&
+      p.added === added &&
+      p.removed === removed &&
+      p.moves === moves.length &&
+      p.whitespaceOnly === whitespaceOnly
         ? p
         : { count, current, added, removed, moves: moves.length, whitespaceOnly },
     );
