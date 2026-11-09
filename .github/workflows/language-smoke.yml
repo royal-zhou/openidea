@@ -89,11 +89,15 @@ jobs:
       - if: matrix.language == 'java' || matrix.language == 'kotlin'
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21" }
-      - if: matrix.language == 'java'
+      - name: Install Eclipse JDT LS
+        if: matrix.language == 'java'
         run: |
+          archive="$RUNNER_TEMP/jdtls.tar.gz"
+          curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-all-errors \
+            --retry-max-time 180 --output "$archive" \
+            "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz"
           mkdir -p "$RUNNER_TEMP/jdtls"
-          curl -fsSL "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz" \
-            | tar xz -C "$RUNNER_TEMP/jdtls"
+          tar xzf "$archive" -C "$RUNNER_TEMP/jdtls"
           echo "$RUNNER_TEMP/jdtls/bin" >> "$GITHUB_PATH"
 
       # The Kotlin fixture has no Gradle wrapper: the server imports it with the Gradle on PATH.
