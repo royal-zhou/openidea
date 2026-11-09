@@ -1,0 +1,52 @@
+name: Backfill Intel Mac DMG
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/release-intel-dmg.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-intel-dmg-v0.1.39
+
+env:
+  TAG: v0.1.39
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+
+jobs:
+  build:
+    name: Build and upload macOS x64 DMG
+    if: github.repository == 'royal-zhou/openidea'
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/v0.1.39
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-apple-darwin }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: x86_64-apple-darwin }
+      - run: pnpm install --frozen-lockfile
+      - name: Build Intel Mac DMG
+        run: |
+          pnpm tauri build --target x86_64-apple-darwin --bundles dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+      - name: Verify and upload DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bundle=target/x86_64-apple-darwin/release/bundle
+          lipo -verify_arch x86_64 "$bundle/macos/OpenIDEA.app/Contents/MacOS/openidea"
+          dmg="$bundle/dmg/OpenIDEA_${TAG#v}_x64.dmg"
+          hdiutil verify "$dmg"
+          gh release upload "$TAG" "$dmg"

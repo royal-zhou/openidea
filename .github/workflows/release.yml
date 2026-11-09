@@ -110,6 +110,9 @@ jobs:
           - name: macOS arm64
             os: macos-latest
             target: aarch64-apple-darwin
+          - name: macOS x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -222,6 +225,7 @@ jobs:
             // Bundle suffix → updater platform keys, as tauri-action names them.
             const kinds = [
               [/_aarch64\.app\.tar\.gz$/, ["darwin-aarch64", "darwin-aarch64-app"]],
+              [/_x64\.app\.tar\.gz$/, ["darwin-x86_64", "darwin-x86_64-app"]],
               [/_x64_en-US\.msi$/, ["windows-x86_64", "windows-x86_64-msi"]],
               [/_x64-setup\.exe$/, ["windows-x86_64-nsis"]],
             ];
