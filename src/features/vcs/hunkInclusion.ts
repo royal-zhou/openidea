@@ -1,33 +1,23 @@
-/**
- * Partial commit by changed block (as IDEA):
- * in a local-changes diff each changed block gets a gutter checkbox that includes it in
- * the next commit or leaves it out; the file's checkbox in the commit tree goes
- * tri-state. `commitChanges` then commits only the included blocks.
- */
-import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
+import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { LineHunk } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import type { MenuItem } from "@/ui";
 import { commands } from "@/platform/ipc";
 import { checkOf, hunkIncluded, toggledHunk } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { useCommit } from "./commitStore";
-import { hunkKeys } from "./hunks";
+import { hunkAtLine, hunkKeys } from "./hunks";
 import { statusOf, useVcs } from "./store";
 
-interface Block {
-  /** 0-based line of the right side the checkbox sits on. */
-  line: number;
-  key: string;
+interface Blocks {
+  hunks: readonly LineHunk[];
+  keys: readonly string[];
 }
 
-const setBlocks = StateEffect.define<Block[]>();
-/** Inclusion changed elsewhere (the commit tree, another diff): redraw. */
-const refresh = StateEffect.define<null>();
-
-const blocksField = StateField.define<Block[]>({
-  create: () => [],
-  update: (v, tr) => tr.effects.find((e) => e.is(setBlocks))?.value ?? v,
+const setBlocks = StateEffect.define<Blocks>();
+const blocksField = StateField.define<Blocks | null>({
+  create: () => null,
+  update: (value, tr) => tr.effects.find((effect) => effect.is(setBlocks))?.value ?? (tr.docChanged ? null : value),
 });
 
 /** The effective inclusion of `path` (change list defaults applied). */
@@ -41,7 +31,7 @@ function inclusionOf(path: string) {
 }
 
 /** Includes / excludes one changed block of `path`; `all` are the keys of every block. */
-export function toggleBlock(path: string, all: readonly string[], key: string) {
+function toggleBlock(path: string, all: readonly string[], key: string) {
   const cur = inclusionOf(path);
   if (!cur) return;
   const next = toggledHunk(cur.check, cur.excluded, all, key);
@@ -53,54 +43,33 @@ export function toggleBlock(path: string, all: readonly string[], key: string) {
   useCommit.setState({ checks: nextChecks, excludedHunks: nextExcluded });
 }
 
-class CheckboxMarker extends GutterMarker {
-  constructor(
-    readonly path: string,
-    readonly key: string,
-    readonly all: readonly string[],
-    readonly checked: boolean,
-  ) {
-    super();
-  }
-  eq(o: CheckboxMarker) {
-    return o.key === this.key && o.checked === this.checked && o.all.length === this.all.length;
-  }
-  toDOM() {
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "cm-include-hunk";
-    box.checked = this.checked;
-    box.setAttribute("aria-label", tx("Include in commit"));
-    box.title = tx("Include in commit");
-    box.onmousedown = (e) => e.stopPropagation();
-    box.onchange = () => toggleBlock(this.path, this.all, this.key);
-    return box;
-  }
+/** Menu action for the backend hunk under the pointer. Partial commits use the same hunk keys. */
+export function hunkInclusionItem(view: EditorView, path: string, line: number): MenuItem | undefined {
+  const blocks = view.state.field(blocksField, false);
+  const cur = inclusionOf(path);
+  if (!blocks || !cur) return;
+  const hunk = hunkAtLine(blocks.hunks, line, view.state.doc.lines);
+  if (!hunk) return;
+  const key = blocks.keys[blocks.hunks.indexOf(hunk)]!;
+  const included = hunkIncluded(cur.check, cur.excluded, key);
+  const doc = view.state.doc;
+  return {
+    label: included ? "Exclude Change from Commit" : "Include Change in Commit",
+    run: () => {
+      if (view.state.doc === doc) toggleBlock(path, blocks.keys, key);
+    },
+  };
 }
 
-const theme = EditorView.baseTheme({
-  ".cm-include-gutter .cm-gutterElement": { display: "flex", alignItems: "center", padding: "0 2px" },
-  ".cm-include-hunk": { margin: 0, width: "12px", height: "12px", accentColor: "var(--accent)", cursor: "pointer" },
-});
-
-/**
- * Inclusion checkboxes for the changed blocks of `path` (right side of a HEAD ↔ working
- * file diff, `base` being the HEAD text). Blocks follow the backend's hunks, which are
- * what a partial commit applies.
- */
-export function inclusionGutter(path: string, base: string): Extension {
+/** Keep partial-commit actions based on the backend's hunks for the current text. */
+export function hunkInclusion(base: string): Extension {
   const compute = ViewPlugin.fromClass(
     class {
       timer: ReturnType<typeof setTimeout> | null = null;
-      seq = 0;
       live = true;
-      unsubscribe: () => void;
+
       constructor(readonly view: EditorView) {
         this.schedule(0);
-        this.unsubscribe = useCommit.subscribe((s, p) => {
-          if (s.checks !== p.checks || s.excludedHunks !== p.excludedHunks)
-            queueMicrotask(() => this.live && this.view.dispatch({ effects: refresh.of(null) }));
-        });
       }
       update(u: ViewUpdate) {
         if (u.docChanged) this.schedule(250);
@@ -110,53 +79,22 @@ export function inclusionGutter(path: string, base: string): Extension {
         this.timer = setTimeout(() => void this.run(), delay);
       }
       async run() {
-        const seq = ++this.seq;
-        const text = this.view.state.doc.toString();
+        const doc = this.view.state.doc;
+        const text = doc.toString();
         let hunks: LineHunk[];
         try {
           hunks = await commands.vcsDiffHunks(base, text);
         } catch {
           return;
         }
-        if (seq !== this.seq || !this.live) return;
-        const keys = hunkKeys(text, hunks);
-        const lines = this.view.state.doc.lines;
-        const blocks = hunks.map((h, i) => ({ line: Math.min(h.start, lines - 1), key: keys[i]! }));
-        this.view.dispatch({ effects: setBlocks.of(blocks) });
+        if (!this.live || this.view.state.doc !== doc) return;
+        this.view.dispatch({ effects: setBlocks.of({ hunks, keys: hunkKeys(text, hunks) }) });
       }
       destroy() {
         if (this.timer) clearTimeout(this.timer);
-        this.unsubscribe();
         this.live = false;
       }
     },
   );
-  const markers = (view: EditorView) => {
-    const blocks = view.state.field(blocksField);
-    const cur = inclusionOf(path);
-    if (!cur || !blocks.length) return RangeSet.empty;
-    const all = blocks.map((b) => b.key);
-    const doc = view.state.doc;
-    const seen = new Set<number>();
-    const ranges = [];
-    for (const b of blocks) {
-      // Two blocks on one line (a deletion right before a change) share the first box.
-      if (seen.has(b.line)) continue;
-      seen.add(b.line);
-      const checked = hunkIncluded(cur.check, cur.excluded, b.key);
-      ranges.push(new CheckboxMarker(path, b.key, all, checked).range(doc.line(b.line + 1).from));
-    }
-    return RangeSet.of(ranges, true);
-  };
-  return [
-    blocksField,
-    compute,
-    theme,
-    gutter({
-      class: "cm-include-gutter",
-      markers,
-      lineMarkerChange: (u) =>
-        u.docChanged || u.transactions.some((t) => t.effects.some((e) => e.is(setBlocks) || e.is(refresh))),
-    }),
-  ];
+  return [blocksField, compute];
 }

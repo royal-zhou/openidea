@@ -1,5 +1,5 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile, RevisionChange } from "@/bindings";
+import type { ChangedFile, FileStatus, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
@@ -151,6 +151,27 @@ export function workingDiffData(path: string, line?: number, side?: "staged" | "
         : { type: "rev", rev: "HEAD" };
   const right: DiffSide = kind === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" };
   return { path, left, right, line };
+}
+
+/** Compare the two versions represented by a row in the staging area. */
+export function stagingDiffData(path: string, status: FileStatus, group: "staged" | "unstaged"): DiffData {
+  const index: DiffSide = { type: "rev", rev: ":0" };
+  if (group === "staged") {
+    const oldPath = status.staged === "renamed" ? (renamedFromPath(status) ?? undefined) : undefined;
+    return {
+      path,
+      left:
+        status.staged === "added"
+          ? { type: "text", text: "", label: "(does not exist)" }
+          : { type: "rev", rev: "HEAD", path: oldPath },
+      right: status.staged === "deleted" ? { type: "text", text: "", label: "(deleted)" } : index,
+    };
+  }
+  return {
+    path,
+    left: index,
+    right: status.unstaged === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" },
+  };
 }
 
 /** A path of the selected repository's log (repository-relative) made absolute. */

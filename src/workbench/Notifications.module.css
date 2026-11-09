@@ -11,6 +11,9 @@
   gap: 8px;
   pointer-events: none;
 }
+:global(body):has([data-merge-footer]) .stack {
+  bottom: calc(var(--h-statusbar) + 32px + var(--h-button));
+}
 .balloon {
   pointer-events: auto;
   animation: slideIn var(--dur) var(--ease);

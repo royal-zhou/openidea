@@ -14,7 +14,7 @@ type Kind = "modified" | "inserted" | "deleted";
 
 interface Opts {
   mode?: "split" | "unified";
-  /** Padded panes (true), or panes joined by a curved divider (false, the default). */
+  /** Aligned panes (true), or independently scrollable panes (false). */
   alignChanges?: boolean;
   syncScroll?: boolean;
   collapse?: boolean;
@@ -290,7 +290,7 @@ test.describe("10,000-line files", () => {
       expect(ms, "time to open").toBeLessThan(8_000);
       await expectCount(page, path, 42);
       // The first change is a single edited identifier.
-      await page.locator(".cm-editor.cm-merge-b .cm-content").first().click();
+      await page.locator(".cm-editor.cm-merge-b .cm-content").first().focus();
       await page.keyboard.press("Meta+ArrowUp");
       await page.keyboard.press("F7");
       await expect(counter(page)).toHaveText("1 of 42 differences");

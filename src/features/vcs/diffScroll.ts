@@ -1,14 +1,11 @@
 /**
  * IDEA's side-by-side diff without alignment padding: each pane scrolls on its
  * own, scrolling one carries the other along through the changes
- * (SyncScrollSupport), and the divider between them draws a curved band per
- * change (DiffDividerDrawUtil) with the ">>" / "<<" arrows on it. Changed lines
- * tint their gutters instead of showing a change bar.
+ * (SyncScrollSupport). The center divider carries the per-change apply controls.
  */
-import { RangeSetBuilder, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { RangeSetBuilder, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { EditorView, GutterMarker, gutterLineClass } from "@codemirror/view";
 import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
-import { changedLineGutters, chunkKind, type DiffKind } from "./cm";
 import { arrowButton } from "./diffControls";
 
 type Side = "a" | "b";
@@ -91,54 +88,37 @@ export function transferY(bands: readonly Band[], y: number, from: Side): number
   return m1 > m0 ? s0 + ((y - m0) * (s1 - s0)) / (m1 - m0) : s0;
 }
 
-/** The divider band between [a0, a1] on the left and [b0, b1] on the right (DiffDrawUtil.makeCurve). */
-export function bandPath(w: number, a0: number, a1: number, b0: number, b1: number): string {
-  // An empty side is a 2px sliver on its boundary.
-  if (a1 - a0 < 2) [a0, a1] = [a0 - 1, a0 + 1];
-  if (b1 - b0 < 2) [b0, b1] = [b0 - 1, b0 + 1];
-  const c1 = w * 0.3;
-  const c2 = w * 0.7;
-  return `M0 ${a0}C${c1} ${a0} ${c2} ${b0} ${w} ${b0}L${w} ${b1}C${c2} ${b1} ${c1} ${a1} 0 ${a1}Z`;
+class GapGutterMarker extends GutterMarker {
+  constructor(readonly elementClass: string) {
+    super();
+  }
 }
 
-const gapMark = (kind: DiffKind, end: boolean) =>
-  Decoration.line({ class: `cm-diffGap cm-diffGap-${kind}${end ? " cm-diffGapEnd" : ""}` });
-
-/** A line where the other side has lines this one lacks, as in IDEA's empty-side marker. */
-function gapDeco(view: EditorView): DecorationSet {
-  const info = getChunks(view.state);
-  if (!info?.side) return Decoration.none;
-  const isA = info.side === "a";
-  const { doc } = view.state;
-  const { from: vpFrom, to: vpTo } = view.viewport;
-  const builder = new RangeSetBuilder<Decoration>();
-  for (const c of info.chunks) {
+/** Mark the line number where the other pane has an unmatched block. */
+function gapDeco(state: EditorState) {
+  const info = getChunks(state);
+  const isA = info?.side === "a";
+  const { doc } = state;
+  const gutters = new RangeSetBuilder<GutterMarker>();
+  for (const c of info?.chunks ?? []) {
     const [from, to] = isA ? [c.fromA, c.toA] : [c.fromB, c.toB];
     if (from !== to) continue;
-    if (from > vpTo) break;
-    if (from < vpFrom) continue;
     // Past the end of a document without a final line break: below its last line.
     const line = doc.lineAt(Math.min(from, doc.length));
-    builder.add(line.from, line.from, gapMark(chunkKind(c), from > doc.length));
+    const kind = isA ? "inserted" : "deleted";
+    const marker = `cm-diffGap cm-diffGap-${kind}${from > doc.length ? " cm-diffGapEnd" : ""}`;
+    gutters.add(line.from, line.from, new GapGutterMarker(marker));
   }
-  return builder.finish();
+  return gutters.finish();
 }
 
-const gapMarks = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = gapDeco(view);
-    }
-    update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged || getChunks(u.startState)?.chunks !== getChunks(u.state)?.chunks)
-        this.decorations = gapDeco(u.view);
-    }
-  },
-  { decorations: (v) => v.decorations },
-);
+const gapMarks = StateField.define({
+  create: gapDeco,
+  update: (value, tr) =>
+    tr.docChanged || getChunks(tr.startState)?.chunks !== getChunks(tr.state)?.chunks ? gapDeco(tr.state) : value,
+  provide: (field) => gutterLineClass.from(field),
+});
 
-const SVG = "http://www.w3.org/2000/svg";
 const ARROW_HEIGHT = 16;
 
 export interface UnalignedPanesOptions {
@@ -156,8 +136,6 @@ export class UnalignedPanes {
   readonly extension: Extension;
   private mv: MergeView | null = null;
   private readonly divider = document.createElement("div");
-  private readonly svg = document.createElementNS(SVG, "svg");
-  private readonly bandLayer = document.createElementNS(SVG, "g");
   private readonly arrowEls = new Map<string, HTMLButtonElement>();
   /** Scroll position each pane was last moved to by the other one, to tell its echo from the user. */
   private readonly moved: Record<Side, { top: number | null; left: number | null }> = {
@@ -171,11 +149,9 @@ export class UnalignedPanes {
 
   constructor(private readonly opts: UnalignedPanesOptions) {
     this.sync = opts.sync;
-    this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
+    this.extension = [gapMarks, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
-    this.svg.setAttribute("aria-hidden", "true");
-    this.svg.appendChild(this.bandLayer);
-    this.divider.appendChild(this.svg);
+    this.divider.classList.toggle("cm-diffDivider-controls", !!opts.arrows);
   }
 
   attach(mv: MergeView) {
@@ -278,7 +254,7 @@ export class UnalignedPanes {
   }
 
   private schedule() {
-    if (this.frame < 0 && this.mv) this.frame = requestAnimationFrame(() => this.draw());
+    if (this.opts.arrows && this.frame < 0 && this.mv) this.frame = requestAnimationFrame(() => this.draw());
   }
 
   private draw() {
@@ -286,12 +262,8 @@ export class UnalignedPanes {
     const mv = this.mv;
     if (!mv) return;
     const rect = this.divider.getBoundingClientRect();
-    const w = rect.width;
     const h = rect.height;
-    if (!w || !h) return;
-    this.svg.setAttribute("width", String(w));
-    this.svg.setAttribute("height", String(h));
-    this.svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    if (!h) return;
     const offA = mv.a.documentTop - rect.top;
     const offB = mv.b.documentTop - rect.top;
     const lineHeight = mv.a.defaultLineHeight;
@@ -299,7 +271,6 @@ export class UnalignedPanes {
       y1 - y0 < 2 ? y0 - ARROW_HEIGHT / 2 : y0 + (Math.min(lineHeight, y1 - y0) - ARROW_HEIGHT) / 2;
     const arrows = this.opts.arrows;
     const shown = new Set<string>();
-    let paths = "";
     const { chunks } = mv;
     // Chunks run down both panes in order: start at the first one reaching into either.
     const first = Math.min(
@@ -312,16 +283,9 @@ export class UnalignedPanes {
       const [b0, b1] = extent(mv.b, c.fromB, c.toB).map((y) => y + offB) as [number, number];
       if (a0 > h + 1 && b0 > h + 1) break;
       if (a1 < -1 && b1 < -1) continue;
-      const kind = chunkKind(c);
-      const mid = (a0 + a1) / 2;
-      const midB = (b0 + b1) / 2;
-      paths +=
-        `<path class="cm-diffBand cm-diffBand-${kind}" d="${bandPath(w, a0, a1, b0, b1)}"/>` +
-        `<path class="cm-diffBandLine cm-diffBand-${kind}" d="M0 ${mid}C${w * 0.3} ${mid} ${w * 0.7} ${midB} ${w} ${midB}"/>`;
       if (arrows?.toB) this.placeArrow(shown, i, "a-to-b", arrowTop(a0, a1), h);
       if (arrows?.toA) this.placeArrow(shown, i, "b-to-a", arrowTop(b0, b1), h);
     }
-    this.bandLayer.innerHTML = paths;
     for (const [key, el] of this.arrowEls)
       if (!shown.has(key)) {
         el.remove();

@@ -2597,7 +2597,6 @@
   "Update Info": "Informações de atualização",
   "Press again to go to the next file": "Pressione novamente para ir para o próximo arquivo",
   "Press again to go to the previous file": "Pressione novamente para ir para o arquivo anterior",
-  "Include in commit": "Incluir no commit",
   "Code analysis": "Análise de código",
   "Line separators": "Separadores de linha",
   "Commit during rebase": "Fazer commit durante o rebase",

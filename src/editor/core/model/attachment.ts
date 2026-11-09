@@ -4,7 +4,7 @@
  * from elsewhere are mirrored into the view. See `attachDocument` in editor/api.
  */
 import { redo, undo } from "@codemirror/commands";
-import { Transaction, type Annotation, type ChangeSet, type StateCommand } from "@codemirror/state";
+import { ChangeSet, Transaction, type Annotation, type StateCommand } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import {
   _addEditor,
@@ -107,7 +107,11 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
       // Into the document's history, like a typed edit: the text tab's when there is one.
       const slot = model.primarySlot();
       if (slot) slot.dispatchLocal({ changes, userEvent });
-      else target.view?.dispatch({ changes, userEvent });
+      else if (target.view) target.view.dispatch({ changes, userEvent });
+      else {
+        const changeSet = ChangeSet.of(changes, model.sync.localText.length);
+        if (!changeSet.empty) model.onLocal(changeSet, target);
+      }
     },
     release: () => {
       if (released) return;

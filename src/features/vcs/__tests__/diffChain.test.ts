@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chainNeighbour, revisionChangeDiffData, withChain, type DiffData } from "../diffInput";
+import type { FileStatus } from "@/bindings";
+import { chainNeighbour, revisionChangeDiffData, stagingDiffData, withChain, type DiffData } from "../diffInput";
 
 const diff = (path: string): DiffData => ({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
 
@@ -45,5 +46,26 @@ describe("combined changes of several commits", () => {
     expect(added.left).toMatchObject({ type: "text", text: "" });
     const deleted = revisionChangeDiffData({ ...base, path: "d.ts", kind: "deleted", after: null });
     expect(deleted.right).toMatchObject({ type: "text", text: "" });
+  });
+});
+
+describe("staging area diff", () => {
+  const status: FileStatus = {
+    path: "/r/src/a.ts",
+    relPath: "src/a.ts",
+    staged: "renamed",
+    unstaged: "modified",
+    renamedFrom: "src/old.ts",
+  };
+
+  it("compares the staged and unstaged rows against their own base", () => {
+    expect(stagingDiffData(status.path, status, "staged")).toMatchObject({
+      left: { type: "rev", rev: "HEAD", path: "/r/src/old.ts" },
+      right: { type: "rev", rev: ":0" },
+    });
+    expect(stagingDiffData(status.path, status, "unstaged")).toMatchObject({
+      left: { type: "rev", rev: ":0" },
+      right: { type: "worktree" },
+    });
   });
 });

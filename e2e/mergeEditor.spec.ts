@@ -14,10 +14,11 @@ async function mountMerge(
   page: Page,
   versions: [string | null, string | null, string | null] = [BASE, OURS, THEIRS],
   failure: string | null = null,
+  openFileFirst = false,
 ) {
   await page.goto("/");
   await page.evaluate(
-    async ({ versions: [base, ours, theirs], failure }) => {
+    async ({ versions: [base, ours, theirs], failure, openFileFirst }) => {
       const reactPath = "/node_modules/.vite/deps/react.js";
       const domPath = "/node_modules/.vite/deps/react-dom_client.js";
       const react = await import(reactPath);
@@ -43,6 +44,18 @@ async function mountMerge(
                 sides: { operation: "merge", reversed: false, branch: "main", otherBranch: "feature", commit: null },
               },
             };
+      if (openFileFirst) {
+        const controllerPath = "/src/editor/core/controller.ts";
+        const backendPath = "/src/editor/core/backend.ts";
+        const { editorController } = await import(controllerPath);
+        const { docBackend } = await import(backendPath);
+        const path = "/project/demo.ts";
+        docBackend().files.set(path, `<<<<<<< HEAD\n${ours}=======\n${theirs}>>>>>>> incoming\n`);
+        const controller = editorController();
+        await controller.openFile(path);
+        await controller.openInput({ kind: "merge", key: `merge:${path}`, path, data: { path } });
+        return;
+      }
       const { MergeEditor } = await import(editorPath);
       const host = document.createElement("div");
       host.style.cssText = "position:fixed;inset:0;z-index:500;display:flex;background:white";
@@ -52,7 +65,7 @@ async function mountMerge(
         createElement(MergeEditor, { input: { key: "merge:demo.ts", data: { path: "/project/demo.ts" } } }),
       );
     },
-    { versions, failure },
+    { versions, failure, openFileFirst },
   );
   if (!failure && !versions.some((text) => text?.includes("\0")))
     await expect(page.getByRole("region", { name: "Result" }).locator(".cm-content")).toBeVisible();
@@ -69,9 +82,21 @@ async function captureWrites(page: Page) {
     const { commands } = await import(ipcPath);
     const calls: { command: string; args: unknown[] }[] = [];
     Object.assign(window, { mergeWrites: calls });
-    commands.fsReadText = async () => ({ status: "ok", data: "working copy\n" });
-    commands.docOpen = async () => ({ status: "ok", data: { id: 777, version: 1 } });
-    for (const command of ["docEdit", "docSave", "docClose", "fsDelete", "vcsStage"])
+    const backendPath = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(backendPath);
+    const backend = docBackend();
+    if (!backend.files.has("/project/demo.ts")) backend.files.set("/project/demo.ts", "working copy\n");
+    const edit = backend.edit.bind(backend);
+    const save = backend.save.bind(backend);
+    backend.edit = (...args: unknown[]) => {
+      calls.push({ command: "docEdit", args });
+      return edit(...args);
+    };
+    backend.save = (...args: unknown[]) => {
+      calls.push({ command: "docSave", args });
+      return save(...args);
+    };
+    for (const command of ["fsDelete", "vcsStage"])
       commands[command] = async (...args: unknown[]) => {
         calls.push({ command, args });
         return { status: "ok", data: null };
@@ -89,7 +114,7 @@ const writes = (page: Page) =>
       ).mergeWrites,
   );
 
-test("CRLF resolutions use UTF-16 editor positions and preserve line endings on Apply", async ({ page }) => {
+test("CRLF resolutions send normalized UTF-16 edits on Apply", async ({ page }) => {
   const base = "标题😀\r\nunchanged\r\nbase\r\ntail";
   const ours = base.replace("base", "左侧🚀");
   await mountMerge(page, [base, ours, base.replace("base", "右侧🧪")]);
@@ -103,22 +128,62 @@ test("CRLF resolutions use UTF-16 editor positions and preserve line endings on 
   await page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true }).click();
   await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
   const calls = await writes(page);
-  expect(calls.map((call) => call.command)).toEqual(["docEdit", "docSave", "docClose", "vcsStage"]);
-  expect(calls[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: ours }] });
+  expect(calls.map((call) => call.command)).toEqual(["docEdit", "docSave", "vcsStage"]);
+  expect(calls[0]!.args[2]).toEqual([{ from: 0, to: 13, insert: ours.replace(/\r\n/g, "\n") }]);
 });
 
 test("Apply writes and stages unresolved text only after confirmation", async ({ page }) => {
   await mountMerge(page);
   await captureWrites(page);
   const apply = page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true });
-  await apply.click();
+  // WebKit can click a button while leaving focus outside the merge editor.
+  await apply.evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByRole("dialog")).toContainText("Save and mark the file as resolved anyway?");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   expect(await writes(page)).toEqual([]);
   await apply.click();
   await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
   await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
-  expect((await writes(page))[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: BASE }] });
+  expect((await writes(page))[0]!.args[2]).toEqual([{ from: 0, to: 13, insert: BASE }]);
+});
+
+test("applying the merge updates the already open file tab", async ({ page }) => {
+  await mountMerge(page, [BASE, OURS, THEIRS], null, true);
+  await captureWrites(page);
+  await page
+    .getByRole("region", { name: "Your version" })
+    .locator(".cm-merge-accept")
+    .nth(1)
+    .click({ modifiers: ["Meta"] });
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
+  await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
+  await expect(page.getByRole("region", { name: "Result" })).toHaveCount(0);
+  const file = page.getByRole("tabpanel").locator(".cm-content");
+  await expect(file).toContainText("mine");
+  await expect(file).not.toContainText("<<<<<<<");
+});
+
+test("notification balloons leave the merge footer clickable", async ({ page }) => {
+  await mountMerge(page);
+  await page.evaluate(async () => {
+    const host = document.querySelector<HTMLElement>("#merge-host")!;
+    host.style.bottom = "var(--h-statusbar)";
+    host.style.right = "48px";
+    const store = "/src/workbench/notificationStore.ts";
+    const { notify } = await import(store);
+    notify({ group: "vcs", level: "warning", title: "Merge conflicts", body: "1 file has conflicts", sticky: true });
+  });
+  await expect(page.getByText("1 file has conflicts", { exact: true })).toBeVisible();
+  const apply = page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true });
+  await expect
+    .poll(() =>
+      apply.evaluate((button) => {
+        const { left, top, width, height } = button.getBoundingClientRect();
+        return button.contains(document.elementFromPoint(left + width / 2, top + height / 2));
+      }),
+    )
+    .toBe(true);
 });
 
 test("binary and unreadable versions show an error with no Apply controls", async ({ page }) => {
@@ -159,9 +224,16 @@ test("the result starts as the base and every change waits for a decision", asyn
   await expect(status(page)).toHaveText("3 changes left, 2 conflicts");
   expect((await text(result(page))).trimEnd()).toBe(BASE.trimEnd());
   // Accept and Ignore beside the changes of each side, a wand beside the conflict that needs no decision.
-  await expect(page.getByRole("region", { name: "Your version" }).locator(".cm-merge-accept")).toHaveCount(2);
-  await expect(page.getByRole("region", { name: "Their version" }).locator(".cm-merge-accept")).toHaveCount(3);
+  const left = page.getByRole("region", { name: "Your version" }).locator(".cm-merge-accept");
+  const right = page.getByRole("region", { name: "Their version" }).locator(".cm-merge-accept");
+  await expect(left).toHaveCount(2);
+  await expect(right).toHaveCount(3);
   await expect(result(page).locator(".cm-merge-wand")).toHaveCount(1);
+  const middle = (await result(page).boundingBox())!;
+  const leftArrow = (await left.first().boundingBox())!;
+  const rightArrow = (await right.first().boundingBox())!;
+  expect(Math.abs(middle.x - leftArrow.x - leftArrow.width)).toBeLessThan(8);
+  expect(Math.abs(rightArrow.x - middle.x - middle.width)).toBeLessThan(8);
 });
 
 test("resolves the simple conflicts and applies the other changes in one step", async ({ page }) => {

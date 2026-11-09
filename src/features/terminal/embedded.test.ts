@@ -14,6 +14,9 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     options = {};
+    parser = {
+      registerCsiHandler: () => ({ dispose() {} }),
+    };
     hasSelection() {
       return !!terminal.selection;
     }

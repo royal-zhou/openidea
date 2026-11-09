@@ -1,4 +1,6 @@
 {
+  "Fix All with Oxlint": "Fix All with Oxlint",
+  "No Oxlint fixes available for this file": "No Oxlint fixes available for this file",
   "Connect through:": "Connect through:",
   "Connect through": "Connect through",
   "WSL distribution:": "WSL distribution:",

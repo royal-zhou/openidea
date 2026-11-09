@@ -24,6 +24,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       fsReadImage: (path: string) => readImage(path),
       vcsReadImage: (path: string, rev: string | null) => revImage(path, rev),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] }),
+      vcsDiffHunks: () =>
+        Promise.resolve([{ kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "old\n" }]),
       fsReadText: () => Promise.resolve({ status: "ok", data: working }),
     },
   };
@@ -51,6 +53,8 @@ import { DiffEditor, mapLine } from "../DiffEditor";
 import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
+import { useCommit } from "../commitStore";
+import { useVcs } from "../store";
 
 /** Git Log opens a commit's file: both sides are revisions. */
 const input = {
@@ -87,6 +91,42 @@ describe("Diff toolbar", () => {
     mounted.unmount();
     localStorage.removeItem("openidea.vcs.diffOptions");
   });
+  it("includes or excludes a hunk from the context menu without a gutter checkbox", async () => {
+    const path = "/p/a.ts";
+    const status = { path, relPath: "a.ts", staged: null, unstaged: "modified", renamedFrom: null } as const;
+    useVcs.setState({ status: [status], byPath: new Map([[path, status]]) });
+    useCommit.setState({ checks: new Map([[path, "all"]]) });
+    texts.HEAD = "old\n";
+    working = "new\n";
+    const mounted = render(
+      <>
+        <DiffEditor
+          input={{ ...input, data: { path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } } }}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    try {
+      await waitFor(() => expect(document.querySelector(".cm-merge-b .cm-diffLine")).not.toBeNull());
+      const view = EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-merge-b")!)!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue(0);
+      expect(view.dom.querySelector('input[type="checkbox"]')).toBeNull();
+      await waitFor(() => {
+        fireEvent.contextMenu(view.contentDOM);
+        expect(screen.getByRole("menuitem", { name: "Exclude Change from Commit" })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("menuitem", { name: "Exclude Change from Commit" }));
+      expect(useCommit.getState().checks.get(path)).toBe("none");
+      fireEvent.contextMenu(view.contentDOM);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Include Change in Commit" }));
+      expect(useCommit.getState().checks.get(path)).toBe("all");
+    } finally {
+      mounted.unmount();
+      useVcs.setState({ status: [], byPath: new Map() });
+      useCommit.setState({ checks: new Map(), excludedHunks: new Map() });
+    }
+  });
+
   it("shows a binary notice for disk comparisons instead of identical empty text", async () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: true, tooLarge: false } });
     const binaryInput = {
@@ -149,8 +189,9 @@ describe("Diff toolbar", () => {
     expect(probe).toHaveBeenCalledWith("/p/a.ts");
   });
 
-  it("turns on aligned changes from the settings menu (off by default)", async () => {
+  it("honors saved unaligned mode and switches to alignment from the settings menu", async () => {
     localStorage.clear();
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ alignChanges: false }));
     texts.HEAD = "a\nb\n";
     texts.abc123 = "a\nnew\nb\n";
     render(
@@ -162,8 +203,14 @@ describe("Diff toolbar", () => {
     await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
     // Unpadded panes joined by the divider.
     await waitFor(() => expect(document.querySelector(".cm-diffDivider")).not.toBeNull());
+    expect(document.querySelector(".cm-merge-a .cm-gutters-before .cm-lineNumbers")).not.toBeNull();
+    expect(document.querySelector(".cm-merge-b .cm-gutters-before .cm-lineNumbers")).not.toBeNull();
+    expect(document.querySelector(".cm-merge-a .cm-lineNumbers .cm-diffGap-inserted")?.textContent).toBe("2");
     expect(document.querySelector(".cm-changeGutter")).toBeNull();
-    expect(document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffGutter-inserted")?.textContent).toBe("2");
+    expect(
+      document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffGutter-inserted.cm-diffChunkStart")?.textContent,
+    ).toBe("2");
+    expect(await screen.findByTitle("Added lines")).toHaveTextContent("+1");
     // The lock turns scrolling together off without rebuilding the panes.
     const divider = document.querySelector(".cm-diffDivider");
     (await screen.findByRole("button", { name: "Synchronize Scrolling" })).click();

@@ -30,6 +30,8 @@ import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const OXLINT_LANGUAGES = ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"];
+const OXLINT_WHEN = OXLINT_LANGUAGES.map((id) => `editorLangId == ${id}`).join(" || ");
 
 /**
  * Languages whose servers offer Generate (constructors, accessors, overrides…).
@@ -192,6 +194,18 @@ export function registerLspActions(): () => void {
     editorAction("code.reformat", "Reformat Code", "Code", reformat, {
       keywords: ["format", "prettier"],
     }),
+    editorAction(
+      "code.fixAllWithOxlint",
+      "Fix All with Oxlint",
+      "Code",
+      (view) =>
+        runKindAction(view, "source.fixAll.oxc", {
+          whole: true,
+          none: "No Oxlint fixes available for this file",
+          label: "Fix All with Oxlint",
+        }),
+      { when: `${EDITOR_WHEN} && !editorReadOnly && (${OXLINT_WHEN})`, keywords: ["lint", "oxc"] },
+    ),
     editorAction(
       "code.reformatWithPrettier",
       "Reformat with Prettier",

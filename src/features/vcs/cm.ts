@@ -93,7 +93,7 @@ function forChangedLines(
   state: EditorState,
   vpFrom: number,
   vpTo: number,
-  f: (line: Line, kind: DiffKind, fine: boolean) => void,
+  f: (line: Line, kind: DiffKind, fine: boolean, start: boolean) => void,
 ) {
   const info = getChunks(state);
   if (!info || !info.side) return;
@@ -108,7 +108,7 @@ function forChangedLines(
     const fine = hasInnerFragments(chunk);
     // A line starting at `vpTo` is still in view (the empty last line).
     for (let line = doc.lineAt(Math.max(from, vpFrom)); line.from < to && line.from <= vpTo;) {
-      f(line, kind, fine);
+      f(line, kind, fine, line.from === from);
       if (line.number === doc.lines) break;
       line = doc.line(line.number + 1);
     }
@@ -183,7 +183,9 @@ const gutterMarkers = byKind((kind) => ({
   fine: new LineClassMarker(`cm-diffChangedGutter cm-diffGutter-${kind} cm-diffGutter-fine`),
 }));
 
-/** The line background of changed lines carried into the gutters (line numbers, inclusion boxes), as in IDEA. */
+const chunkStart = new LineClassMarker("cm-diffChunkStart");
+
+/** Carry change colours and chunk boundaries into the line number gutters. */
 export const changedLineGutters = StateField.define<RangeSet<GutterMarker>>({
   create: (state) => changedGutterMarkers(state),
   update: (value, tr) =>
@@ -195,9 +197,10 @@ export const changedLineGutters = StateField.define<RangeSet<GutterMarker>>({
 
 function changedGutterMarkers(state: EditorState): RangeSet<GutterMarker> {
   const builder = new RangeSetBuilder<GutterMarker>();
-  forChangedLines(state, 0, state.doc.length, (line, kind, fine) =>
-    builder.add(line.from, line.from, fine ? gutterMarkers[kind].fine : gutterMarkers[kind].coarse),
-  );
+  forChangedLines(state, 0, state.doc.length, (line, kind, fine, start) => {
+    builder.add(line.from, line.from, fine ? gutterMarkers[kind].fine : gutterMarkers[kind].coarse);
+    if (start) builder.add(line.from, line.from, chunkStart);
+  });
   return builder.finish();
 }
 
@@ -289,9 +292,6 @@ export const viewerTheme = EditorView.theme(
     ".cm-line.cm-diffLine-modified": { backgroundColor: diffTint("modified", 70) },
     ".cm-line.cm-diffLine-inserted": { backgroundColor: diffTint("inserted", 70) },
     ".cm-line.cm-diffLine-deleted": { backgroundColor: diffTint("deleted", 70) },
-    ".cm-diffGutter-modified": { backgroundColor: "var(--diff-modified)" },
-    ".cm-diffGutter-inserted": { backgroundColor: "var(--diff-inserted)" },
-    ".cm-diffGutter-deleted": { backgroundColor: "var(--diff-deleted)" },
     // Chunks whose words were compared take the lighter colour (TextDiffType.getIgnoredColor), their
     // fragments the full one; lines translucent so the selection shows through, gutters opaque.
     ...Object.assign(
@@ -303,9 +303,8 @@ export const viewerTheme = EditorView.theme(
           },
         },
         {
-          [`.cm-diffGutter-fine.cm-diffGutter-${k}`]: {
-            backgroundColor: `color-mix(in srgb, var(--diff-${k}) 40%, var(--bg-app))`,
-          },
+          [`.cm-diffGutter-${k}`]: { backgroundColor: diffTint(k, 82) },
+          [`.cm-diffGutter-fine.cm-diffGutter-${k}`]: { backgroundColor: diffTint(k, 62) },
         },
       ]),
     ),

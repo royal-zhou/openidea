@@ -158,7 +158,7 @@ const KIND_ORDER: GroupId[] = ["conflicts", "staged", "unstaged", "changes", "un
 function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, scope: string = group): ChangeNode {
   const path = stripSlash(fs.path);
   const rel = relTo(root, path);
-  const kind = effectiveKind(fs) ?? "modified";
+  const kind = (group === "staged" ? fs.staged : group === "unstaged" ? fs.unstaged : effectiveKind(fs)) ?? "modified";
   const dir = dirName(rel);
   return {
     key: `${scope}:${path}`,
@@ -168,13 +168,14 @@ function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, s
     files: [fs],
     kind,
     path,
-    detail: !fs.renamedFrom
-      ? flat
-        ? dir
-        : undefined
-      : flat && dir
-        ? tx`${dir} · from ${fs.renamedFrom}`
-        : tx`from ${fs.renamedFrom}`,
+    detail:
+      !fs.renamedFrom || group === "unstaged"
+        ? flat
+          ? dir
+          : undefined
+        : flat && dir
+          ? tx`${dir} · from ${fs.renamedFrom}`
+          : tx`from ${fs.renamedFrom}`,
   };
 }
 

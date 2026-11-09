@@ -2599,7 +2599,6 @@
   "Update Info": "업데이트 정보",
   "Press again to go to the next file": "다시 누르면 다음 파일로 이동합니다",
   "Press again to go to the previous file": "다시 누르면 이전 파일로 이동합니다",
-  "Include in commit": "커밋에 포함",
   "Code analysis": "코드 분석",
   "Line separators": "줄 구분자",
   "Commit during rebase": "리베이스 중 커밋",

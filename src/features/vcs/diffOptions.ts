@@ -23,7 +23,7 @@ export interface DiffViewOptions {
   syncScroll: boolean;
   /**
    * Side-by-side panes are padded so that unchanged lines line up. Off, each pane
-   * keeps its own height and a curved divider joins the changes (IDEA's default).
+   * keeps its own height and can scroll independently.
    */
   alignChanges: boolean;
 }
@@ -47,7 +47,7 @@ export const DEFAULT_DIFF_OPTIONS: DiffViewOptions = {
   highlight: "words",
   collapse: true,
   syncScroll: true,
-  alignChanges: false,
+  alignChanges: true,
 };
 
 const KEY = "openidea.vcs.diffOptions";

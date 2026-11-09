@@ -37,6 +37,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  --tree-inset: 6px;
 }
 .empty {
   color: var(--fg-subtle);
@@ -79,6 +80,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+.fileCount {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.inclusionAction {
+  flex: none;
+  margin-left: auto;
+  opacity: 0;
+}
+.nodeRow:hover .inclusionAction,
+.nodeRow:focus-within .inclusionAction,
+[aria-selected="true"] > .nodeRow .inclusionAction {
+  opacity: 1;
 }
 .partial {
   flex: none;

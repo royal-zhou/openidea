@@ -28,6 +28,49 @@ async function openSample(page: Page) {
   return editor;
 }
 
+test("editor right-click runs formatting and Oxlint fixes for the current file", async ({ workbench: page }) => {
+  const path = `${ROOT}/oxlint-menu.js`;
+  await page.evaluate(async (path) => {
+    const backendModule = "/src/editor/core/backend.ts";
+    const contributionsModule = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendModule);
+    const { editorService } = await import(/* @vite-ignore */ contributionsModule);
+    docBackend().files.set(path, "let answer=42;\nconsole.log(answer);\n");
+    await editorService().openFile(path);
+  }, path);
+  await stubDesktop(page);
+  await page.evaluate((path) => {
+    const edit = { range: { start: { line: 0, col: 0 }, end: { line: 0, col: 14 } }, new_text: "let answer = 42;" };
+    window.__ipc.handlers.lsp_format = () => [edit];
+    window.__ipc.handlers.lsp_code_actions = ({ only }) =>
+      Array.isArray(only) && only.includes("source.fixAll.oxc")
+        ? [
+            {
+              title: "fix all safe fixable oxlint issues",
+              kind: "source.fixAll.oxc",
+              server: 1,
+              edit: { files: [{ kind: "edit", path, edits: [{ ...edit, new_text: "const answer = 42;" }] }] },
+            },
+          ]
+        : [];
+    window.__ipc.handlers.lsp_execute_code_action = () => [];
+  }, path);
+  const line = page.locator(".cm-line", { hasText: "let answer" });
+  await line.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Reformat Code" }).click();
+  await expect(line).toHaveText("let answer = 42;");
+  await line.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Fix All with Oxlint" }).click();
+  await expect
+    .poll(() => ipcCalls(page, "lsp_execute_code_action"))
+    .toContainEqual(expect.objectContaining({ action: expect.objectContaining({ kind: "source.fixAll.oxc" }) }));
+  await expect
+    .poll(() => ipcCalls(page, "lsp_code_actions"))
+    .toContainEqual(
+      expect.objectContaining({ only: ["source.fixAll.oxc"], range: { start: at(0, 0), end: at(2, 0) } }),
+    );
+});
+
 test("completion lists the server's items and inserts the chosen one", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(() => {

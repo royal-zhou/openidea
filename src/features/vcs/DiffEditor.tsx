@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Prec, Text, type Extension } from "@codemirror/state";
+import { EditorState, Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -75,7 +75,7 @@ import {
 } from "./diffViewerProviders";
 import { UnalignedPanes } from "./diffScroll";
 import { groupOf } from "./changes";
-import { inclusionGutter } from "./hunkInclusion";
+import { hunkInclusion, hunkInclusionItem } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
 import { effectiveKind, stripSlash } from "./model";
 import { diffShowsImage, ImageDiff } from "./ImageDiff";
@@ -225,7 +225,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     return data.mode ? { ...saved, mode: data.mode } : saved;
   });
   const [lang, setLang] = useState<Extension | null>(null);
-  const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
+  const [chunkInfo, setChunkInfo] = useState({
+    count: 0, current: -1, added: 0, removed: 0, moves: 0, whitespaceOnly: false,
+  });
+  const lineTotals = useRef<{ chunks: readonly Chunk[]; added: number; removed: number }>(null);
   const [busy, setBusy] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const viewsRef = useRef<Views | null>(null);
@@ -316,19 +319,31 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   }, [path]);
 
   const updateChunkInfo = useCallback(() => {
-    const v = viewsRef.current?.b;
-    if (!v) return;
+    const views = viewsRef.current;
+    if (!views) return;
+    const v = views.b;
     const chunks = getChunks(v.state)?.chunks ?? [];
     const head = v.state.selection.main.head;
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
+    if (lineTotals.current?.chunks !== chunks) {
+      const before = views.a?.state.doc ?? getOriginalDoc(v.state);
+      let added = 0;
+      let removed = 0;
+      for (const chunk of chunks) {
+        const lines = chunkLines(chunk, before, v.state.doc);
+        added += lines.toB - lines.fromB;
+        removed += lines.toA - lines.fromA;
+      }
+      lineTotals.current = { chunks, added, removed };
+    }
+    const { added, removed } = lineTotals.current;
     const { moves, whitespaceOnly } = getDiffInsights(chunks);
+    const count = chunks.length;
     setChunkInfo((p) =>
-      p.count === chunks.length &&
-      p.current === current &&
-      p.moves === moves.length &&
-      p.whitespaceOnly === whitespaceOnly
+      p.count === count && p.current === current && p.added === added && p.removed === removed &&
+      p.moves === moves.length && p.whitespaceOnly === whitespaceOnly
         ? p
-        : { count: chunks.length, current, moves: moves.length, whitespaceOnly },
+        : { count, current, added, removed, moves: moves.length, whitespaceOnly },
     );
   }, []);
 
@@ -378,9 +393,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
     const diffConfig = ideaDiffConfig(opts.ignore, opts.highlight);
     const highlightChanges = opts.highlight === "words";
-    const inclusion = includable ? inclusionGutter(path, textA) : [];
+    const inclusion = includable ? hunkInclusion(textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       viewerBase({ readOnly: !editable, findBar: true }),
+      EditorState.phrases.of({ "$ unchanged lines": tx("$ unchanged lines") }),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
@@ -566,7 +582,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       at = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1))).from;
     } else {
       const chunks = getChunks(v.state)?.chunks ?? [];
-      at = (data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
+      const chunk = data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0];
+      if (chunk) at = Math.min(chunk.fromB, v.state.doc.length);
     }
     if (at === undefined) return;
     if (data.line != null) revealPos(v, at);
@@ -863,7 +880,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         id: "sync",
         label: "Synchronize Scrolling",
         checked: opts.syncScroll,
-        disabled: opts.mode !== "split",
+        disabled: opts.mode !== "split" || opts.alignChanges,
         run: () => setOpts({ syncScroll: !opts.syncScroll }),
       },
       {
@@ -904,7 +921,9 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     const line = hit
       ? hit.view.state.doc.lineAt(hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false)).number - 1
       : -1;
+    const include = hit?.side === "right" && includable ? hunkInclusionItem(hit.view, path, line) : null;
     const groups = [
+      ...(include ? [[include]] : []),
       ...(hit ? contribs.map((c) => c.contextMenuItems?.({ side: hit.side, line }) ?? []) : []),
       blameItems(pane),
     ].filter((g) => g.length);
@@ -993,20 +1012,22 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           />
         )}
         <span className={styles.sep} />
-        <IconButton
-          icon="split"
-          title="Side-by-side Viewer"
-          size="small"
-          pressed={opts.mode === "split"}
-          onClick={() => setOpts({ mode: "split" })}
-        />
-        <IconButton
-          icon="list"
-          title="Unified Viewer"
-          size="small"
-          pressed={opts.mode === "unified"}
-          onClick={() => setOpts({ mode: "unified" })}
-        />
+        <div className={styles.modeSwitch}>
+          <IconButton
+            icon="split"
+            title="Side-by-side Viewer"
+            size="small"
+            pressed={opts.mode === "split"}
+            onClick={() => setOpts({ mode: "split" })}
+          />
+          <IconButton
+            icon="list"
+            title="Unified Viewer"
+            size="small"
+            pressed={opts.mode === "unified"}
+            onClick={() => setOpts({ mode: "unified" })}
+          />
+        </div>
         <span className={styles.sep} />
         <Select<IgnorePolicy>
           className={styles.select}
@@ -1029,7 +1050,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           pressed={opts.collapse}
           onClick={() => setOpts({ collapse: !opts.collapse })}
         />
-        {opts.mode === "split" && (
+        {opts.mode === "split" && !opts.alignChanges && (
           <IconButton
             icon="lock"
             title="Synchronize Scrolling"
@@ -1096,17 +1117,27 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       {opts.mode === "split" ? (
         <div className={styles.labels}>
           <span className={styles.label} title={sideLabel(left)}>
-            {sideLabel(left)}
+            <span className={styles.labelText}>{tx(sideLabel(left))}</span>
             {editableA && (
               <span className={styles.badge}>
                 <T>editable</T>
               </span>
             )}
+            {ready && !binary && !showImage && chunkInfo.removed > 0 && (
+              <span className={clsx(styles.lineStat, styles.removed)} title={tx("Deleted lines")}>
+                −{chunkInfo.removed}
+              </span>
+            )}
           </span>
           <span className={styles.label} title={sideLabel(right)}>
-            {sideLabel(right)}
+            <span className={styles.labelText}>{tx(sideLabel(right))}</span>
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
+            )}
+            {ready && !binary && !showImage && chunkInfo.added > 0 && (
+              <span className={clsx(styles.lineStat, styles.added)} title={tx("Added lines")}>
+                +{chunkInfo.added}
+              </span>
             )}
           </span>
         </div>
@@ -1153,7 +1184,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
+          opts.mode === "split" && !opts.alignChanges && styles.unaligned,
         )}
         hidden={showImage || !!binary || !!error || !ready}
         aria-label={diffTitle(data)}

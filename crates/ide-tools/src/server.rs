@@ -1,5 +1,5 @@
-//! `openidea-server` builds for remote development: the release of this
-//! version publishes one per supported host platform (see `release.yml`).
+//! Cached and downloadable `openidea-server` builds for remote development.
+//! Release downloads require assets for the requested version and host.
 
 use crate::process::Http;
 use crate::{InstallEvent, fetch_verified, sources};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 const RELEASES: &str = "https://github.com/l0ng-ai/openidea/releases/download";
 
-/// Host platforms with a published server (Rust's `OS`-`ARCH` names).
+/// Host platforms supported by the server downloader (Rust's `OS`-`ARCH` names).
 pub const PLATFORMS: &[(&str, &str)] =
     &[("linux", "x86_64"), ("linux", "aarch64"), ("macos", "aarch64"), ("macos", "x86_64")];
 

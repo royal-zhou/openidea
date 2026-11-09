@@ -1,5 +1,5 @@
 /**
- * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
+ * Commit tool window: change list with inclusion controls, message, stashes. Its
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
@@ -47,7 +47,6 @@ import {
   stagingNodeChecked,
   stagingPlan,
   stagingToggle,
-  stagingSide,
   toggledCheck,
   withStagedChecks,
   type ChangeNode,
@@ -75,10 +74,11 @@ import {
   type CommitTab,
 } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
+import { openMergeEditor } from "./conflictsUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { diffInput, openDiff, stagingDiffData, withChain, workingDiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
-import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
@@ -190,12 +190,20 @@ const bottomLeft = (el: HTMLElement) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+/** Opens the merge editor for conflicts, or a diff chain for other changes. */
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], focus = true) {
   if (n.type !== "file" || !n.path) return;
+  if (n.group === "conflicts") {
+    openMergeEditor(n.path, focus);
+    return;
+  }
   const nodes = groupFileNodes(roots, n);
-  const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
-  void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+  const items = nodes.map((f) =>
+    f.group === "staged" || f.group === "unstaged"
+      ? stagingDiffData(f.path!, f.files[0]!, f.group)
+      : workingDiffData(f.path!),
+  );
+  void openDiff({ ...withChain(items, Math.max(0, nodes.indexOf(n))), reveal: "first" }, focus ? { preview: true } : { preview: true, focus: false });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -393,16 +401,16 @@ export function useIncludedCount(): number {
   );
 }
 
-/** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
+/** The Commit tool window's Commit tab: changes above the message. */
 function ChangesPanel() {
   const included = useIncludedCount();
   return (
     <SplitGroup orientation="vertical" className={styles.split}>
-      <SplitPanel defaultSize="62%" minSize="20%">
+      <SplitPanel defaultSize="74%" minSize="20%">
         <ChangesTree mode="commit" />
       </SplitPanel>
       <SplitHandle />
-      <SplitPanel defaultSize="38%" minSize="120px">
+      <SplitPanel defaultSize="26%" minSize="120px">
         <CommitPanel included={included} />
       </SplitPanel>
     </SplitGroup>
@@ -416,6 +424,7 @@ function ChangesPanel() {
 export function LocalChangesView() {
   const preview = useCommit((s) => s.diffPreview);
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const file = useVcs((s) => (path ? s.byPath.get(stripSlash(path)) : undefined));
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   return (
     <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
@@ -426,7 +435,16 @@ export function LocalChangesView() {
         <>
           <SplitHandle />
           <SplitPanel defaultSize="50%" minSize="120px">
-            {path ? (
+            {path && file && effectiveKind(file) === "conflicted" ? (
+              <EmptyState
+                title="File has unresolved merge conflicts"
+                actions={
+                  <Button onClick={() => openMergeEditor(path)}>
+                    <T>Resolve conflicts…</T>
+                  </Button>
+                }
+              />
+            ) : path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
               <EmptyState>
@@ -448,12 +466,11 @@ export function LocalChangesView() {
 export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
-  const groupByDir = useCommit((s) => s.groupByDir);
+  const groupByDir = useCommit((s) => mode === "commit" || s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
-  const checkboxes = mode !== "local";
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned"]));
@@ -559,7 +576,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             viewRef.current &&
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
-              { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              ...(mode === "commit" ? [] : [{ label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) }]),
               { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
               ...(mode === "local"
                 ? [
@@ -586,7 +603,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       <div
         className={styles.treeWrap}
         onKeyDownCapture={(e) => {
-          if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
+          if (e.target instanceof HTMLButtonElement) return;
+          if (mode !== "local" && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
             e.stopPropagation();
             const nodes = selectedNodes();
@@ -637,6 +655,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             n.type !== "group" && n.path && isTestFile(n.path, projectRoots) ? styles.testFile : undefined
           }
           isExpandable={(n) => n.type !== "file"}
+          indent={mode === "commit" ? 16 : undefined}
           expanded={expanded}
           onExpandedChange={(_next, node, open) =>
             setCollapsed((c) => {
@@ -647,13 +666,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             })
           }
           selected={selected}
-          onSelectionChange={(sel) => {
+          onSelectionChange={(sel, lead) => {
             setSelected(sel);
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
             useCommit.setState({
               selection: filesOf(nodes).map((f) => f.path),
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
+            if (mode === "commit" && lead && sel.size === 1 && sel.has(lead.key)) openNode(lead, roots, false);
           }}
           onActivate={(n) => openNode(n, roots)}
           onContextMenu={(node, sel, e: MouseEvent) => {
@@ -675,6 +695,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             const agg = staging
               ? { checked: stagingNodeChecked(n.group), indeterminate: false }
               : aggregateCheck(n.files, checks);
+            const removing = agg.checked || (n.files.length === 1 && agg.indeterminate);
+            const actionLabel = staging
+              ? removing
+                ? "Unstage"
+                : "Stage"
+              : removing
+                ? "Exclude from Commit"
+                : "Include in Commit";
             const label = (
               <span
                 className={clsx(
@@ -683,7 +711,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
-                title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
+                title={n.type === "file" && n.kind ? `${nodeText(n)} · ${tx(KIND_LABEL[n.kind])}` : nodeText(n)}
               >
                 {nodeText(n)}
               </span>
@@ -725,7 +753,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
                 {...dnd}
               >
-                {checkboxes && (
+                {mode === "dialog" && (
                   <CheckMark
                     checked={agg.checked}
                     indeterminate={agg.indeterminate}
@@ -741,13 +769,31 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   />
                 )}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.fileCount}>{fileCount(n.files.length)}</span>}
                 {n.type === "file" && !staging && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
-                {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {n.detail && (
+                  <span className={styles.detail} title={n.detail}>
+                    {n.detail}
+                  </span>
+                )}
+                {mode === "commit" && n.files.length > 0 && (!staging || n.group !== "conflicts") && (
+                  <IconButton
+                    className={styles.inclusionAction}
+                    icon={removing ? "minus" : "plus"}
+                    title={actionLabel}
+                    aria-label={`${tx(actionLabel)} · ${nodeText(n)}`}
+                    size="small"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    onClick={() => toggle(n, [n])}
+                  />
+                )}
               </span>
             );
           }}

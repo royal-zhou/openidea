@@ -6,6 +6,7 @@
 import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
+import { getAction, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
@@ -666,9 +667,14 @@ export class EditorController implements SlotHost {
     const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
     if (pos !== null && !view.state.selection.ranges.some((r) => r.from <= pos && pos <= r.to))
       view.dispatch({ selection: EditorSelection.cursor(pos) });
+    view.focus();
+    if (slot !== this.activeSlot) this.onFocus(slot);
     const hasSel = !view.state.selection.main.empty;
+    const oxlint = getAction("code.fixAllWithOxlint");
     const items: MenuItem[] = [
       { kind: "action", action: "code.showIntentions", label: "Show Context Actions", icon: "bulb" },
+      ...(!view.state.readOnly ? ([{ kind: "action", action: "code.reformat" }] as const) : []),
+      ...(oxlint && isActionEnabled(oxlint) ? ([{ kind: "action", action: oxlint.id }] as const) : []),
       { kind: "separator" },
       // Like IDEA, Cut / Copy only with a selection.
       ...((hasSel

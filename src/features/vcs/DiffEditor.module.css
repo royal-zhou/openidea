@@ -1,4 +1,7 @@
 .root {
+  --diff-inserted: color-mix(in srgb, var(--success) 27%, var(--bg-editor));
+  --diff-deleted: color-mix(in srgb, var(--danger) 27%, var(--bg-editor));
+  --diff-modified: color-mix(in srgb, var(--accent) 27%, var(--bg-editor));
   position: relative;
   container: diff-editor / inline-size;
   flex: 1;
@@ -6,16 +9,18 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-app);
+  background: var(--bg-editor);
 }
 .toolbar {
   flex: none;
-  height: var(--h-header);
+  min-height: 40px;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 0 6px;
-  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
 .toolbar > * {
   flex-shrink: 0;
@@ -25,6 +30,14 @@
   height: 14px;
   margin: 0 4px;
   background: var(--border-strong);
+}
+.modeSwitch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-editor);
 }
 .toolbar > .count {
   flex-shrink: 1;
@@ -36,6 +49,10 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.count:empty {
+  padding: 0;
 }
 /* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
 @container diff-editor (max-width: 640px) {
@@ -51,10 +68,11 @@
 .labels {
   flex: none;
   display: flex;
-  height: var(--h-row);
+  min-height: 32px;
   border-bottom: 1px solid var(--border);
-  color: var(--fg-secondary);
+  color: var(--fg-strong);
   font-size: var(--fs-small);
+  background: var(--bg-editor-inline, var(--bg-elev));
 }
 .label {
   flex: 1;
@@ -66,19 +84,42 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-weight: 600;
 }
 .label + .label {
   border-left: 1px solid var(--border);
 }
+.labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .badge {
+  flex: none;
   padding: 0 5px;
   border-radius: var(--radius-small);
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--bg-hover);
+  color: var(--fg-secondary);
+  font-weight: 400;
   font-family: var(--font-ui);
   font-size: var(--fs-tiny);
   line-height: 15px;
+}
+.lineStat {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: var(--radius-small);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.removed {
+  color: color-mix(in srgb, var(--danger) 68%, var(--fg-strong));
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.added {
+  color: color-mix(in srgb, var(--success) 68%, var(--fg-strong));
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 /* The editor's find bar, over the side it searches (side-by-side) or the whole viewer. */
 .findRow {
@@ -170,6 +211,70 @@
 .host :global(.cm-mergeViewEditor) {
   min-width: 0;
 }
+.host :global(.cm-editor) {
+  background: var(--bg-editor);
+}
+.host :global(.cm-gutters) {
+  background: var(--bg-editor-gutter, var(--bg-editor));
+  border: 0;
+  border-right: 1px solid var(--border);
+}
+.host :global(.cm-mergeViewEditor .cm-lineNumbers .cm-gutterElement) {
+  min-width: 40px;
+  padding-inline: 17px 8px;
+}
+.host :global(.cm-lineNumbers .cm-diffGutter-inserted) {
+  --diff-rail: var(--success);
+  --diff-glyph: "+";
+}
+.host :global(.cm-lineNumbers .cm-diffGutter-deleted) {
+  --diff-rail: var(--danger);
+  --diff-glyph: "−";
+}
+.host :global(.cm-lineNumbers .cm-diffGutter-modified) {
+  --diff-rail: var(--accent);
+  --diff-glyph: "~";
+}
+.host :global(.cm-lineNumbers .cm-diffChangedGutter) {
+  position: relative;
+  color: var(--fg-secondary);
+  box-shadow: inset -2px 0 0 var(--diff-rail);
+}
+.host :global(.cm-lineNumbers .cm-diffChunkStart)::before {
+  content: var(--diff-glyph);
+  position: absolute;
+  inset-inline-start: 5px;
+  color: color-mix(in srgb, var(--diff-rail) 68%, var(--fg-strong));
+  font-weight: 600;
+}
+.host :global(.cm-content) {
+  padding-block: 4px;
+}
+.host :global(.cm-line) {
+  padding-inline: 9px;
+}
+.host :global(.cm-mergeSpacer) {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--fg-subtle) 8%, transparent) 5px 6px
+  );
+}
+.host :global(.cm-collapsedLines) {
+  padding: 0 10px;
+  line-height: max(24px, var(--openidea-editor-line-height, var(--lh-code)));
+  background: var(--bg-editor-inline, var(--bg-elev));
+  box-shadow:
+    inset 0 1px var(--border),
+    inset 0 -1px var(--border);
+  color: var(--fg-secondary);
+}
+.host :global(.cm-collapsedLines:hover) {
+  background: var(--bg-hover);
+}
+.host :global(.cm-mergeViewEditor + .cm-mergeViewEditor) {
+  border-left: 1px solid var(--border-strong);
+}
 .host :global(.cm-merge-revert) {
   width: 22px;
   background: var(--bg-elev);
@@ -232,12 +337,25 @@
 }
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
+.noHighlight :global(.cm-inlineChangedLine),
 .noHighlight :global(.cm-changedText),
+.noHighlight :global(.cm-deletedChunk),
+.noHighlight :global(.cm-deletedText),
 .noHighlight :global(.cm-diffLine),
 .noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;
 }
-/* Side-by-side without alignment (IDEA's default): each pane scrolls itself. */
+.noHighlight :global(.cm-lineNumbers .cm-diffChunkStart)::before {
+  visibility: hidden;
+}
+.noHighlight :global(.cm-lineNumbers .cm-diffChangedGutter) {
+  color: inherit;
+}
+.noHighlight :global(.cm-lineNumbers .cm-diffChangedGutter),
+.noHighlight :global(.cm-diffGap) {
+  box-shadow: none !important;
+}
+/* Each pane scrolls itself when alignment is off. */
 .unaligned :global(.cm-mergeView) {
   overflow: hidden;
 }
@@ -261,46 +379,28 @@
 .host :global(.cm-diffDivider) {
   position: relative;
   flex: none;
-  width: 30px;
+  width: 1px;
   overflow: hidden;
-  background: var(--bg-app);
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
+  background: var(--border-strong);
 }
-.host :global(.cm-diffDivider svg) {
-  position: absolute;
-  inset: 0;
-}
-/* The full colours of the change types (cm.ts), so bands and their midlines read as one shape. */
-.host :global(.cm-diffBand-inserted) {
-  --band: var(--diff-inserted);
-}
-.host :global(.cm-diffBand-deleted) {
-  --band: var(--diff-deleted);
-}
-.host :global(.cm-diffBand-modified) {
-  --band: var(--diff-modified);
-}
-.host :global(.cm-diffBand) {
-  fill: var(--band);
-}
-.host :global(.cm-diffBandLine) {
-  fill: none;
-  stroke: var(--band);
-  stroke-width: 1px;
+.host :global(.cm-diffDivider-controls) {
+  width: 28px;
+  background: var(--bg-editor-inline, var(--bg-elev));
+  border-inline: 1px solid var(--border);
 }
 .host :global(.cm-diffDivider button.cm-diffArrow) {
   position: absolute;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: 12px;
   height: 16px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-small);
   background: none;
-  color: var(--fg-subtle);
+  color: var(--fg-secondary);
+  opacity: 0.8;
   cursor: pointer;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
@@ -309,22 +409,24 @@
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
   right: 1px;
 }
-.host :global(.cm-diffDivider button.cm-diffArrow:hover) {
+.host :global(.cm-diffDivider button.cm-diffArrow:hover),
+.host :global(.cm-diffDivider button.cm-diffArrow:focus-visible) {
   color: var(--fg-strong);
-  background: transparent;
+  background: var(--bg-hover);
+  opacity: 1;
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {
-  box-shadow: inset 0 1px 0 var(--gutter-added);
+  box-shadow: inset 0 1px 0 var(--success);
 }
 .host :global(.cm-diffGap-deleted) {
-  box-shadow: inset 0 1px 0 var(--gutter-deleted);
+  box-shadow: inset 0 1px 0 var(--danger);
 }
 .host :global(.cm-diffGap-inserted.cm-diffGapEnd) {
-  box-shadow: inset 0 -1px 0 var(--gutter-added);
+  box-shadow: inset 0 -1px 0 var(--success);
 }
 .host :global(.cm-diffGap-deleted.cm-diffGapEnd) {
-  box-shadow: inset 0 -1px 0 var(--gutter-deleted);
+  box-shadow: inset 0 -1px 0 var(--danger);
 }
 
 /* Review comments under diff lines (pull requests). */

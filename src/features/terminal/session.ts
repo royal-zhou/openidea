@@ -15,6 +15,8 @@ import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
+import { trackScrollbackErase } from "./scrollback";
+import { protectSynchronizedOutput } from "./synchronizedOutput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
@@ -244,6 +246,7 @@ export class TerminalSession {
     this.term.loadAddon(this.searchAddon);
 
     this.disposables.push(
+      ...trackScrollbackErase(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -388,6 +391,7 @@ export class TerminalSession {
       // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
       // selected text rendered at a visibly different weight than the rest.
       this.term.open(this.host);
+      protectSynchronizedOutput(this.term);
       remeasureWhenFontsLoad(
         this.term,
         fontFor(workflowSettings().terminal),

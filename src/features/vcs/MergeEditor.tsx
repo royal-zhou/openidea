@@ -262,7 +262,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       tx`Resolve ${baseName(path)}`,
       async () => {
         if (text === null) await call(commands.fsDelete(path));
-        else await writeFileText(path, text, { save: true, exact: true });
+        else await writeFileText(path, text, { exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
@@ -557,7 +557,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     return (
       <div ref={rootRef} className={styles.message} {...focusProps}>
         {error}
-        <Button onClick={() => void executeAction("merge.reload")}>
+        <Button
+          onClick={(e) => {
+            e.currentTarget.focus({ preventScroll: true });
+            void executeAction("merge.reload");
+          }}
+        >
           <T>Retry</T>
         </Button>
       </div>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Chunk, MergeView } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
-import { bandAt, bandPath, transferY, type Band } from "../diffScroll";
+import { bandAt, transferY, type Band } from "../diffScroll";
 
 const doc = (s: string) => Text.of(s.split("\n"));
 const LINE = 20;
@@ -84,10 +84,6 @@ describe("unaligned side-by-side scrolling", () => {
     const stretched = [{ a0: 0, a1: 100, b0: 0, b1: 200, changed: false }];
     expect(transferY(stretched, 50, "a")).toBe(100);
     expect(transferY(stretched, 50, "b")).toBe(25);
-  });
-
-  it("draws an empty side as a sliver on its boundary", () => {
-    expect(bandPath(30, 40, 40, 40, 100)).toBe("M0 39C9 39 21 40 30 40L30 100C21 100 9 41 0 41Z");
   });
 
   it("can keep MergeView from padding the panes", () => {

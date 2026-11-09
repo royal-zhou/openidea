@@ -6,6 +6,8 @@
  */
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste } from "./paste";
+import { trackScrollbackErase } from "./scrollback";
+import { protectSynchronizedOutput } from "./synchronizedOutput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -62,6 +64,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   live.add(term);
   const processResize = settledResize((cols, rows) => opts.onResize(cols, rows));
   const disposables: IDisposable[] = [
+    ...trackScrollbackErase(term),
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
     term.onResize(({ cols, rows }) => processResize.resized(cols, rows)),
@@ -88,6 +91,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const removePaste = installTerminalPaste(host, (text) => term.paste(text));
   const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
   term.open(host);
+  protectSynchronizedOutput(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
 
   const fitter = fitScheduler(() => {
