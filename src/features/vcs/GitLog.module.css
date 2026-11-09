@@ -161,6 +161,8 @@
   min-height: 0;
   overflow: auto;
   outline: none;
+  /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
+  contain: strict;
 }
 .row {
   position: absolute;
@@ -377,6 +379,21 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
+.lineStats {
+  display: inline-flex;
+  gap: 6px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.fileRow .lineStats {
+  margin-left: auto;
+}
+.lineAdded {
+  color: var(--vcs-added);
+}
+.lineRemoved {
+  color: var(--vcs-deleted);
+}
 .messageBox {
   height: 100%;
   overflow: auto;
@@ -407,12 +424,6 @@
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
-}
-.expandMessage {
-  display: block;
-  margin-block-start: 6px;
-  font-weight: normal;
-  font-size: var(--fs-small);
 }
 .fullMessage {
   margin-top: 6px;
@@ -590,7 +601,6 @@
 .worktreeList {
   flex: 1;
   min-height: 0;
-  overflow: auto;
 }
 
 .colRepository {

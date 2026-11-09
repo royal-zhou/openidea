@@ -98,7 +98,13 @@ export async function produceResolved(input: ContextInput, dir = false): Promise
   // Project configurations (tests, cargo, gradle…) need no runtime lookup.
   if (named.config && !named.config.id.startsWith("context:file:")) return named;
   const lang = scriptLanguage(input.path, input.content);
-  const env = await toolEnv(neededTools(fresh), input.path, fresh.root, lang === "python" || lang === "shebang");
+  const env = await toolEnv(
+    neededTools(fresh),
+    input.path,
+    fresh.root,
+    lang === "python" || lang === "shebang",
+    lang === "php" || lang === "shebang",
+  );
   return produceContext(fresh, env);
 }
 
@@ -114,8 +120,8 @@ function reportMissing(p: Produced) {
 }
 
 /** Builds with `build` in the Run window; resolves whether it succeeded. */
-async function buildFirst(build: RunConfig): Promise<boolean> {
-  const session = await startRun(build);
+async function buildFirst(build: RunConfig, show?: boolean): Promise<boolean> {
+  const session = await startRun(build, undefined, undefined, { show });
   if (!session) return false;
   return new Promise((resolve) => {
     const check = () => {
@@ -133,7 +139,7 @@ async function buildFirst(build: RunConfig): Promise<boolean> {
 }
 
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
-export async function launchProduced(p: Produced, debug: boolean): Promise<void> {
+export async function launchProduced(p: Produced, debug: boolean, show?: boolean): Promise<void> {
   if (p.missing || !p.config) {
     reportMissing(p);
     return;
@@ -154,11 +160,11 @@ export async function launchProduced(p: Produced, debug: boolean): Promise<void>
       });
       return;
     }
-    if (!(await buildFirst(p.debug.build))) return;
-    await executeAction("debug.startConfig", { config: p.debug.config, origin: config });
+    if (!(await buildFirst(p.debug.build, show))) return;
+    await executeAction("debug.startConfig", { config: p.debug.config, origin: config, show });
     return;
   }
-  await executeAction("run.debugConfig", config);
+  await executeAction("run.debugConfig", show === false ? { config, show: false } : config);
 }
 
 /**

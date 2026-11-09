@@ -38,7 +38,7 @@ export function stagingGroupsOf(fs: FileStatus): GroupId[] {
  * The staging-area form commits exactly the index: no implicit staging or unstaging.
  */
 export function stagingPlan(status: readonly FileStatus[]): CommitPlan {
-  return { stage: [], unstage: [], included: status.filter((f) => f.staged), partial: [] };
+  return { stage: [], exclude: [], included: status.filter((f) => f.staged), partial: [] };
 }
 
 /** Inclusion for the staging-area form: the checkbox is the file's staged state. */
@@ -416,8 +416,10 @@ export function groupFileNodes(roots: readonly ChangeNode[], node: ChangeNode): 
 }
 
 export interface CommitPlan {
+  /** Included files committed with their working-tree content. */
   stage: string[];
-  unstage: string[];
+  /** Staged files left out of the commit; they stay staged. */
+  exclude: string[];
   /** Files that end up in the commit. */
   included: FileStatus[];
   /** Absolute paths of included files committed with only some of their hunks. */
@@ -446,19 +448,19 @@ export function renamedFromPath(fs: FileStatus): string | null {
   return root === null ? null : `${root}${fs.renamedFrom}`;
 }
 
-/** What to stage / unstage so the index holds exactly the included changes. */
+/** What the commit takes beyond the index, and what staged changes it leaves out. */
 export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitPlan {
-  const plan: CommitPlan = { stage: [], unstage: [], included: [], partial: [] };
+  const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
     if (!groupOf(fs)) continue;
     const c = checkOf(fs, checks);
     const path = stripSlash(fs.path);
     if (c === "none") {
       if (fs.staged && fs.staged !== "conflicted") {
-        plan.unstage.push(path);
-        // A staged rename is a deletion + addition: leaving the deletion staged would commit it.
+        plan.exclude.push(path);
+        // A staged rename is a deletion + addition: leaving the deletion in would commit it.
         const from = renamedFromPath(fs);
-        if (from) plan.unstage.push(from);
+        if (from) plan.exclude.push(from);
       }
       continue;
     }
@@ -468,6 +470,20 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
     plan.included.push(fs);
   }
   return plan;
+}
+
+/**
+ * Inclusion overrides kept after a commit (same shape for `checks` and `excludedHunks`):
+ * the committed changes start over, since they either left the tree or only some of
+ * their blocks went in. The changes the user left out keep their override, so they stay
+ * excluded instead of falling back to "included" in the next commit.
+ */
+export function remainingOverrides<T>(
+  overrides: ReadonlyMap<string, T>,
+  committed: readonly FileStatus[],
+): Map<string, T> {
+  const done = new Set(committed.map((f) => stripSlash(f.path)));
+  return new Map([...overrides].filter(([path]) => !done.has(stripSlash(path))));
 }
 
 /**

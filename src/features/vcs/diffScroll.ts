@@ -152,6 +152,7 @@ export class UnalignedPanes {
     this.extension = [gapMarks, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
     this.divider.classList.toggle("cm-diffDivider-controls", !!opts.arrows);
+    this.divider.setAttribute("data-wheel-scroll", "");
   }
 
   attach(mv: MergeView) {

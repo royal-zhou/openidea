@@ -3,9 +3,10 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
-import { useId, useMemo } from "react";
-import { IconButton, Input, type SelectOption } from "@/ui";
-import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
+import { useEffect, useId, useMemo, useState } from "react";
+import { call, commands, type Sdk } from "@/platform/ipc";
+import { IconButton, Input, type SelectOption, T } from "@/ui";
+import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
@@ -117,13 +118,51 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
   level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
 );
 
+/** The `php` on `PATH` (what the Default interpreter runs), looked up while `enabled`. */
+function usePathPhp(enabled: boolean): string | null {
+  const [path, setPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    call(commands.sdkLocateTools(["php"], null))
+      .then((r) => live && setPath(r.tools[0]?.path ?? null))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return path;
+}
+
+/**
+ * The Xdebug version `php` loads, `null` for none; `undefined` while it is checked or when the check
+ * fails. Checked again when detection runs again (after installing Xdebug).
+ */
+function useXdebug(php: Sdk | undefined): string | null | undefined {
+  const [found, setFound] = useState<{ php: Sdk; xdebug: string | null } | null>(null);
+  useEffect(() => {
+    if (!php) return;
+    let live = true;
+    call(commands.sdkPhpXdebug(php.path, null))
+      .then((r) => live && setFound({ php, xdebug: r.xdebug }))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [php]);
+  return found && found.php === php ? found.xdebug : undefined;
+}
+
 export function PhpPage() {
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const { list } = useDetected("php");
-  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  const pathPhp = usePathPhp(!interpreter);
+  // Default runs the `php` on PATH: the list is newest first, so it isn't necessarily `list[0]`.
+  const selected = list.find((s) => s.path === (interpreter || pathPhp));
+  const xdebug = useXdebug(selected);
   return (
     <div className={styles.page}>
       <Section>
@@ -162,6 +201,16 @@ export function PhpPage() {
           />
         </Row>
       </Section>
+      <Section title="PHPStan">
+        <PathInput
+          k="languages.php.phpstanConfig"
+          label="Configuration file"
+          placeholder="phpstan.neon, phpstan.neon.dist or phpstan.dist.neon"
+          hint="The configuration vendor/bin/phpstan checks saved files with. Empty uses phpstan.neon, phpstan.neon.dist or phpstan.dist.neon in the project root. Absolute, or relative to the project."
+          title="Select PHPStan Configuration File"
+          file
+        />
+      </Section>
       <Section title="CLI Interpreter">
         <SdkRow
           k="languages.php.interpreter"
@@ -174,6 +223,7 @@ export function PhpPage() {
           hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
         />
         {selected?.version && <Row label="Version">{selected.version}</Row>}
+        {xdebug !== undefined && <Row label="Xdebug">{xdebug ?? <T>Not installed</T>}</Row>}
       </Section>
     </div>
   );
@@ -308,8 +358,13 @@ export function GoPage() {
 // ---------------------------------------------------------------------------
 // Java
 
+export const JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((level) =>
+  level ? { value: level, label: level } : { value: "", label: "SDK default", detail: "from build / JDK" },
+);
+
 export function JavaPage() {
   const [vmArgs, setVmArgs] = useSetting<string>("languages.java.jdtlsVmArgs");
+  const [languageLevel, setLanguageLevel] = useSetting<string>("languages.java.languageLevel");
   const id = useId();
   return (
     <div className={styles.page}>
@@ -325,6 +380,17 @@ export function JavaPage() {
           aria-label="Project JDK"
           hint="Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle."
         />
+        <Row
+          label="Language level"
+          hint="Java source and bytecode compliance level when no build descriptor overrides it."
+        >
+          <Select
+            value={languageLevel}
+            options={JAVA_LEVEL_OPTIONS}
+            onChange={setLanguageLevel}
+            aria-label="Java language level"
+          />
+        </Row>
       </Section>
       <Section title="Language Server">
         <SdkRow
@@ -427,9 +493,21 @@ export function GradlePage() {
 
 export function MavenPage() {
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
+  const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const id = useId();
   return (
     <div className={styles.page}>
       <Section>
+        <SdkRow
+          k="languages.java.maven.runnerJre"
+          label="JRE"
+          kind="jdk"
+          emptyLabel="Use Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="JRE"
+          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
+        />
         <SdkRow
           k="languages.java.maven.home"
           label="Maven home path"
@@ -456,6 +534,23 @@ export function MavenPage() {
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
         />
+        <Row
+          label="Thread count"
+          htmlFor={id}
+          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+        >
+          <span className={styles.pathRow}>
+            <Input
+              id={id}
+              mono
+              className={styles.pathInput}
+              value={threads}
+              placeholder="4, 2C"
+              onChange={(e) => setThreads(e.target.value.trim())}
+              aria-label="Thread count"
+            />
+          </span>
+        </Row>
         <Toggle
           label="Use Maven Daemon (mvnd)"
           checked={daemon}

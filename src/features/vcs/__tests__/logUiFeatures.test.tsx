@@ -23,7 +23,6 @@ vi.mock("@/platform/ipc", async (original) => {
         status: "ok",
         data: await Promise.all(ids.map(async () => (await api.details()).data)),
       }),
-      vcsLogIndex: () => ok({ indexed: 0, total: 0, running: false }),
       vcsDiffRevisions: (...args: unknown[]) => api.diff(...args),
     },
   };
@@ -35,7 +34,6 @@ import { commitKey } from "../multiRoot";
 import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
 import { LogScope } from "../LogScope";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
-import { VcsDialogHost } from "../dialogs";
 
 const c = (id: string, parents: string[] = [], refs: string[] = []): Commit => ({
   id,
@@ -84,7 +82,6 @@ beforeEach(() => {
     tab: "log",
     logTabs: [],
     commits: [],
-    rows: [],
     filters: emptyFilters(),
     selection: [],
     selected: null,
@@ -169,12 +166,7 @@ describe("log controls", () => {
 describe("commit details", () => {
   it("loads a full body, containing branches, and signature only when details are visible", async () => {
     useGitLog.setState({ selected: "/repo\0tip", selection: ["/repo\0tip"] });
-    render(
-      <>
-        <LogView />
-        <VcsDialogHost />
-      </>,
-    );
+    render(<LogView />);
     await screen.findByRole("listbox", { name: "Commits" });
     expect(api.details).not.toHaveBeenCalled();
     await act(async () => {
@@ -182,9 +174,6 @@ describe("commit details", () => {
     });
     expect(await screen.findByText("Full body loaded on demand")).toBeInTheDocument();
     expect(screen.getByText(/Signature.*Verified/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Expand Commit Message" }));
-    expect(await screen.findByRole("dialog", { name: "Commit tip" })).toHaveTextContent("Full body loaded on demand");
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   });
 
   it("compares real merge parents and retains renamed files under affected-path filtering", async () => {

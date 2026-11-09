@@ -16,7 +16,7 @@
   &nbsp;·&nbsp;
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
-  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
+  <a href="#community">Community</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -25,7 +25,9 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux.
+for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
+rather skip the installer, each release also ships a portable zip — unpack it
+and run `openidea.exe`.
 
 ## Benchmark
 
@@ -56,6 +58,19 @@ themes, icon themes and languages need no code at all.
 Install them from Settings › Plugins, or start your own with
 `openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
 the [official plugins](plugins/official). The plugin API is still a preview.
+
+## Community
+
+- [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
+- WeChat group — scan to join:
+
+  <img src="docs/assets/wechat-group.png" alt="WeChat group QR code" width="200">
+
+### Contributors
+
+<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
+</a>
 
 ## License
 

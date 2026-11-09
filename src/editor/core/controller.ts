@@ -24,13 +24,16 @@ import {
   menuGroupItems,
   notifications,
   resolveFileEditor,
+  textEditorWrapperFor,
   useContributions,
   useStandaloneEditor,
+  useTextEditorWrappers,
   type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
   type FileEditorResolution,
   type OpenEditorTab,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ask } from "@/workbench/messages";
@@ -238,6 +241,8 @@ export class EditorController implements SlotHost {
   private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
   private admitting = false;
+  /** Tabs restored from a saved session: not a user's activation, so a pending open still activates its tab. */
+  private restoring = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
 
@@ -270,6 +275,7 @@ export class EditorController implements SlotHost {
         prevTabs = s;
         if (
           !this.admitting &&
+          !this.restoring &&
           (s.activePane !== prev.activePane || s.panes[s.activePane]?.active !== prev.panes[prev.activePane]?.active)
         )
           ++this.activationGeneration;
@@ -342,6 +348,11 @@ export class EditorController implements SlotHost {
     );
     // Gutter, centred column and sticky lines follow Distraction Free Mode.
     this.disposers.push(useDistractionFree.subscribe(() => this.manager.applySettings()));
+    this.disposers.push(
+      useTextEditorWrappers.subscribe(({ wrappers }) => {
+        this.upgradeWrappedImageTabs(wrappers);
+      }),
+    );
     if (prevRoot) this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
@@ -351,6 +362,8 @@ export class EditorController implements SlotHost {
         void this.saveCustomDocuments(true).catch((e) => this.documentError(e));
       }
     };
+    if (this.manager.backend.onApplicationDeactivated)
+      this.disposers.push(this.manager.backend.onApplicationDeactivated(onWindowBlur));
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
       if (this.manager.backend.syncFromDisk)
@@ -450,6 +463,35 @@ export class EditorController implements SlotHost {
 
   // --- session (open tabs, splits, carets per project) ---------------------------
 
+  private upgradeWrappedImageTabs(wrappers: ReadonlyMap<string, TextEditorWrapperContribution>) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    const toEnsure: string[] = [];
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        const path = tab.input.path;
+        if (
+          tab.input.kind === "image" &&
+          path &&
+          textEditorWrapperFor(wrappers, path) &&
+          !pane.tabs.some((other) => other.id !== tab.id && other.input.key === fileKey(path))
+        ) {
+          paneChanged = true;
+          changed = true;
+          if (pane.active === tab.id) toEnsure.push(tab.id);
+          return { ...tab, input: fileInput(path) };
+        }
+        return tab;
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+    }
+    if (!changed) return;
+    useTabs.setState({ ...s, panes }, true);
+    for (const tabId of toEnsure) void this.ensureSlot(tabId);
+  }
+
   private scheduleSessionSave() {
     if (!this.sessionRoot) return;
     clearTimeout(this.sessionTimer);
@@ -487,7 +529,12 @@ export class EditorController implements SlotHost {
       pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
     this.restoredViews = new Map(Object.entries(session.files));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
-    useTabs.setState(state, true);
+    this.restoring = true;
+    try {
+      useTabs.setState(state, true);
+    } finally {
+      this.restoring = false;
+    }
     for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
   }
 
@@ -711,6 +758,7 @@ export class EditorController implements SlotHost {
       {
         label: "Copy / Paste Special",
         submenu: [
+          { kind: "action", action: "editor.copyPathReference" },
           { kind: "action", action: "editor.copyReference" },
           { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },

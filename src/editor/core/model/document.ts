@@ -62,6 +62,7 @@ import {
 import { setMethodLines, softWrapActive } from "../cm/prefs";
 import type { EditorSlot } from "./slot";
 import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
 import { WorkspaceHistory } from "./workspaceHistory";
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
@@ -70,6 +71,9 @@ export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
 export interface DocAttachmentTarget {
   /** Applies changes that are already in the model (another view / the backend). */
   applyExternal(changes: ChangeSet, annotations: Annotation<unknown>[]): void;
+  /** Secondary views that share the text tab's undo history hand it over as tabs open/close. */
+  historyState?(): EditorState | null;
+  adoptHistory?(state: EditorState): void;
 }
 
 export interface DocMeta {
@@ -263,13 +267,15 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
-        onDiscarded: () =>
+        onDiscarded: (reason) => {
+          logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
             level: "warning",
             title: "Editor resynchronised",
             body: tx`Some unsaved edits to ${this.path} could not be applied and were replaced by the file's current content.`,
-          }),
-        onError: (e) => console.warn(`document ${this.path}: sync error`, e),
+          });
+        },
+        onError: (e) => logError(`document ${this.path}: sync error`, e),
       },
       manager.scheduler,
     );
@@ -307,6 +313,8 @@ export class DocModel {
   }
 
   removeSlot(slot: EditorSlot) {
+    if (this.slots.size === 1)
+      for (const attachment of this.attachments) attachment.adoptHistory?.(slot.currentState());
     this.slots.delete(slot);
     if (this.lastFocused === slot) this.lastFocused = null;
     if (!this.inUse()) this.manager.release(this);

@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Everything bound to one open project folder.
 pub struct Project {
     pub(crate) trusted: Arc<AtomicBool>,
+    pub(crate) files_events_active: Arc<AtomicBool>,
     pub root: PathBuf,
     /// Window-scoped event sink, for commands that emit project events.
     pub sink: SharedSink,
@@ -27,6 +28,7 @@ pub struct Project {
     pub languages: Arc<LanguageRegistry>,
     pub settings: Arc<SettingsStore>,
     pub documents: Arc<Documents>,
+    pub(crate) plugin_diagnostics: Arc<crate::plugins::diagnostics::Diagnostics>,
     pub history: Arc<LocalHistory>,
     /// Undo stack of file move / rename refactorings.
     pub moves: FileMoves,
@@ -55,7 +57,8 @@ pub struct Project {
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
-    pub(crate) watcher: Watcher,
+    pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
+    pub(crate) watcher: Arc<Watcher>,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     /// Watchers of folders outside the project that language servers registered file
@@ -192,6 +195,7 @@ impl Host {
                             &effective.project_structure,
                         ),
                     );
+                    ide_lsp::jdtls::configure_project_structure(cfg, root, server_root, &effective.project_structure);
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&data_dir))
@@ -212,13 +216,19 @@ impl Host {
                         cfg.launch_error = Some(e);
                         None
                     });
-                    ide_sdk::apply::configure_java_compiler(cfg, &data_dir, &effective.inspections);
+                    let lang_level = ide_sdk::apply::effective_java_language_level(root, server_root, &effective);
+                    ide_sdk::apply::configure_java_compiler_with_level(
+                        cfg,
+                        &data_dir,
+                        &effective.inspections,
+                        lang_level,
+                    );
                     ide_sdk::java::configure_jdtls(
                         cfg,
                         server_root,
                         &data_dir,
                         &jdks,
-                        ide_sdk::apply::project_jdk(root, &effective).as_ref(),
+                        ide_sdk::apply::module_jdk(root, server_root, &effective).as_ref(),
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
@@ -292,12 +302,30 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
+        let phpstan = crate::phpstan::Phpstan::new(
+            root.clone(),
+            self.config_dir.clone(),
+            settings.clone(),
+            sink.clone(),
+            trusted.clone(),
+        );
+        documents.add_observer(phpstan.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
+        // Shared handle: `unwatched_reason` is a live query on the watcher,
+        // filled after `start` returns so the on-change callback can reach it.
+        let watcher_weak = Arc::new(std::sync::OnceLock::<std::sync::Weak<Watcher>>::new());
+        // One-shot latch for the post-start watch-limit warning (#1915): the
+        // synchronous startup walk and a later batch can both observe it.
+        let notify_watch_exhausted = Arc::new(AtomicBool::new(false));
+        let files_events_active = Arc::new(AtomicBool::new(true));
         let watcher = {
+            let files_events_active = files_events_active.clone();
+            let window = window.to_owned();
             let kotlin_bridge = kotlin_bridge.clone();
+            let phpstan = phpstan.clone();
             let repos = repos.clone();
             let settings = settings.clone();
             let index = index.clone();
@@ -312,6 +340,8 @@ impl Host {
             let lsp = lsp.clone();
             let trusted = trusted.clone();
             let build_cache = build_cache.clone();
+            let notify_watch_exhausted = notify_watch_exhausted.clone();
+            let watcher_weak = watcher_weak.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -321,6 +351,7 @@ impl Host {
                     let (ignored, ignored_gone) = ignored_changes(batch);
                     index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
+                    phpstan.files_removed(batch.removed.iter());
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
                     if composer_changed(&root, changed.iter().chain(&batch.removed)) {
@@ -328,6 +359,10 @@ impl Host {
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
+                    if let Some(plugins) = crate::plugins::editor_plugin_host() {
+                        plugins.invalidate_endpoints(&root, &[changed.clone(), batch.removed.clone()].concat());
+                        plugins.post_files_changed(&window, &root, &files_events_active, batch);
+                    }
                     // A framework's root marker (`angular.json`) created or deleted: its
                     // templates gain or lose their mode. Markers in `node_modules` only
                     // count here when the folder isn't excluded (it is by default).
@@ -397,15 +432,43 @@ impl Host {
                     if git_dirs || vcs_moved {
                         sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
                     }
+                    // A watch limit hit after startup (per-directory mode, Linux):
+                    // folders past the limit never sync — surface it once, like
+                    // the polling fallback below (#1915). The check itself is
+                    // deferred to here, on a batch that already had events.
+                    if !notify_watch_exhausted.load(Ordering::Relaxed)
+                        && let Some(msg) =
+                            watcher_weak.get().and_then(std::sync::Weak::upgrade).and_then(|w| w.unwatched_reason())
+                    {
+                        sink.emit(IdeEvent::Notify {
+                            level: ide_core::event::NotifyLevel::Warning,
+                            title: "External file changes sync may be slow".into(),
+                            body: Some(msg),
+                        });
+                        notify_watch_exhausted.store(true, Ordering::Relaxed);
+                    }
                 }),
             )?
         };
+        let watcher = Arc::new(watcher);
+        let _ = watcher_weak.set(Arc::downgrade(&watcher));
         if let Some(reason) = watcher.polling() {
             sink.emit(IdeEvent::Notify {
                 level: ide_core::event::NotifyLevel::Warning,
                 title: "External file changes sync may be slow".into(),
                 body: Some(reason.into()),
             });
+        }
+        // A watch can also be refused part-way through the synchronous startup
+        // walk (large tree, SYNC_WATCH_BUDGET) — after start() returns, before
+        // any batch. Emit the same warning so the limit isn't silent there either.
+        if let Some(reason) = watcher.unwatched_reason() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason),
+            });
+            notify_watch_exhausted.store(true, Ordering::Relaxed);
         }
 
         // Scratch files live outside the project; watch them too so the
@@ -440,6 +503,7 @@ impl Host {
                     &history,
                     &lsp,
                     Some(&kotlin_bridge),
+                    Some(&phpstan),
                 )?;
                 Some((r.clone(), w))
             })
@@ -461,7 +525,11 @@ impl Host {
             sink.clone(),
         );
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
+        let plugin_diagnostics =
+            crate::plugins::diagnostics::Diagnostics::new(sink.clone(), self.runtime.clone(), &documents, &root);
+        documents.add_observer(plugin_diagnostics.clone());
         let project = Arc::new(Project {
+            plugin_diagnostics,
             trusted,
             root,
             sink,
@@ -486,10 +554,12 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
+            phpstan: Some(phpstan),
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
+            files_events_active,
             light: false,
         });
         {
@@ -513,8 +583,12 @@ impl Host {
             }));
         }
         self.insert_project(window, project.clone());
+        project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
+        }
+        if let Some(phpstan) = &project.phpstan {
+            phpstan.start(&self.runtime);
         }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
@@ -602,7 +676,11 @@ impl Host {
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
+        let plugin_diagnostics =
+            crate::plugins::diagnostics::Diagnostics::new(sink.clone(), self.runtime.clone(), &documents, &dir);
+        documents.add_observer(plugin_diagnostics.clone());
         let project = Arc::new(Project {
+            plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
             sink,
             languages,
@@ -626,10 +704,12 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: None,
-            watcher,
+            phpstan: None,
+            watcher: Arc::new(watcher),
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
+            files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
             root: dir,
         });
@@ -1002,6 +1082,7 @@ impl Project {
                 &self.history,
                 &self.lsp,
                 self.kotlin_bridge.as_ref(),
+                self.phpstan.as_ref(),
             ) {
                 watchers.push((r, w));
             }
@@ -1137,8 +1218,9 @@ fn content_root_watcher(
     history: &Arc<LocalHistory>,
     lsp: &Arc<LspManager>,
     kotlin_bridge: Option<&Arc<crate::kotlin_bridge::KotlinBridge>>,
+    phpstan: Option<&Arc<crate::phpstan::Phpstan>>,
 ) -> Option<Watcher> {
-    let kotlin_bridge = kotlin_bridge.cloned();
+    let (kotlin_bridge, phpstan) = (kotlin_bridge.cloned(), phpstan.cloned());
     let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
     let root = dir.to_path_buf();
     Watcher::start(
@@ -1155,6 +1237,9 @@ fn content_root_watcher(
             }
             if let Some(bridge) = &kotlin_bridge {
                 bridge.files_changed(changed.iter().chain(&batch.removed));
+            }
+            if let Some(phpstan) = &phpstan {
+                phpstan.files_removed(batch.removed.iter());
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
             record_external_changes(&history, &changed, &batch.removed);

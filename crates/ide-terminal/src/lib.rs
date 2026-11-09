@@ -92,11 +92,44 @@ impl TerminalManager {
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
     ) -> IdeResult<TerminalInfo> {
+        self.spawn_impl(options, key, sink, on_output, false)
+    }
+
+    /// Runs an approved absolute executable with exact arguments and cwd.
+    /// A missing project directory fails instead of falling back to the home directory.
+    pub fn spawn_program(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalInfo> {
+        if !options.shell.as_deref().is_some_and(|p| Path::new(p).is_absolute())
+            || !options.cwd.is_absolute()
+            || !options.cwd.is_dir()
+        {
+            return Err(IdeError::invalid("a program PTY requires an absolute executable and an existing cwd"));
+        }
+        self.spawn_impl(options, key, sink, on_output, true)
+    }
+
+    fn spawn_impl(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+        exact: bool,
+    ) -> IdeResult<TerminalInfo> {
         let size = pty_size(options.cols, options.rows);
         let pair = native_pty_system().openpty(size).map_err(|e| IdeError::internal(format!("openpty failed: {e}")))?;
 
-        let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
-        let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
+        let wsl = if cfg!(windows) && !exact { wsl_shell(&options) } else { None };
+        let (shell, mut args) = if exact {
+            (options.shell.clone().expect("spawn_program checked the executable"), options.args.clone())
+        } else {
+            wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args))
+        };
         let mut env = terminal_env(&options.env);
         if let Some(msystem) = default_msystem(&shell, &options.env, std::env::var("MSYSTEM").ok().as_deref()) {
             env.insert("MSYSTEM".to_owned(), msystem.to_owned());
@@ -104,13 +137,19 @@ impl TerminalManager {
         if default_chere_invoking(&shell, &options.env, std::env::var("CHERE_INVOKING").ok().as_deref()) {
             env.insert("CHERE_INVOKING".to_owned(), "1".to_owned());
         }
-        if options.shell_integration {
+        if options.shell_integration && !exact {
             integration::apply(&shell_title(&shell), &mut args, &mut env);
         }
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
         // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
-        cmd.cwd(if wsl.is_some() { resolve_cwd(Path::new("")) } else { resolve_cwd(&options.cwd) });
+        cmd.cwd(if exact {
+            options.cwd.0.clone()
+        } else if wsl.is_some() {
+            resolve_cwd(Path::new(""))
+        } else {
+            resolve_cwd(&options.cwd)
+        });
         for (k, v) in ide_core::process::host_env_fixes() {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -120,6 +159,7 @@ impl TerminalManager {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        apply_powershell_env(&shell, &mut cmd);
 
         let child = pair
             .slave
@@ -557,13 +597,15 @@ pub fn available_shells() -> Vec<String> {
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app,
 /// the Git Bash shortcut and IDEA: login start-up is what loads the completions
 /// and prompts users expect (`/etc/profile`, Git for Windows' git-completion).
+/// `OPENIDEA_SKIP_SHELL_ENV` disables the implicit login argument; explicit
+/// arguments still take precedence, and interactive startup files still run.
 pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
     }
-    let login =
-        matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
+    let login = std::env::var_os("OPENIDEA_SKIP_SHELL_ENV").is_none()
+        && matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
     let args = if login { vec!["-l".to_owned()] } else { Vec::new() };
     (shell, args)
 }
@@ -631,6 +673,18 @@ fn terminal_env(user: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     }
     env.extend(user.iter().map(|(k, v)| (k.clone(), v.clone())));
     env
+}
+
+/// Older pwsh versions can crash while formatting a localized update banner
+/// (PowerShell/PowerShell#28131). Keep explicit preferences in the final environment.
+fn apply_powershell_env(shell: &str, cmd: &mut CommandBuilder) {
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    if cfg!(windows)
+        && (name.eq_ignore_ascii_case("pwsh") || name.eq_ignore_ascii_case("pwsh.exe"))
+        && cmd.get_env("POWERSHELL_UPDATECHECK").is_none_or(|v| v.is_empty())
+    {
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+    }
 }
 
 /// Git Bash's MSYSTEM profile on Windows, when nobody chose one. A bare
@@ -753,6 +807,22 @@ mod tests {
             }
         }
         all
+    }
+
+    #[test]
+    fn program_sessions_never_fall_back_to_another_executable_or_cwd() {
+        let h = harness();
+        let mut options = sh("exit 0");
+        options.shell = None;
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.shell = Some("sh".into());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.cwd = std::env::temp_dir().join(format!("openidea-missing-{}", std::process::id())).into();
+        assert!(!options.cwd.exists());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.list().is_empty());
     }
 
     #[test]
@@ -937,6 +1007,56 @@ mod tests {
 #[cfg(test)]
 mod shell_start_on_every_platform {
     use super::*;
+
+    #[test]
+    fn powershell_update_notifications_default_to_off_on_windows() {
+        for shell in ["pwsh", "pwsh.exe", "PWSH.EXE", "C:\\Program Files\\PowerShell\\7\\PwSh.ExE", "C:/pwsh/pwsh.exe"]
+        {
+            for value in [None, Some("")] {
+                let mut cmd = CommandBuilder::new(shell);
+                cmd.env_clear();
+                if let Some(value) = value {
+                    cmd.env("POWERSHELL_UPDATECHECK", value);
+                }
+                apply_powershell_env(shell, &mut cmd);
+                let want = if cfg!(windows) { Some("Off") } else { value };
+                assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), want.map(std::ffi::OsStr::new), "{shell}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_update_notification_preferences_are_preserved() {
+        for value in ["Default", "LTS", "Off"] {
+            let mut cmd = CommandBuilder::new("pwsh.exe");
+            cmd.env_clear();
+            cmd.env("POWERSHELL_UPDATECHECK", value);
+            apply_powershell_env("pwsh.exe", &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new(value)));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_update_notification_preferences_ignore_key_case() {
+        let mut cmd = CommandBuilder::new("pwsh.exe");
+        cmd.env_clear();
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+        cmd.env("powershell_updatecheck", "Default");
+        apply_powershell_env("pwsh.exe", &mut cmd);
+        assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new("Default")));
+        assert_eq!(cmd.iter_full_env_as_str().count(), 1);
+    }
+
+    #[test]
+    fn other_shells_keep_their_update_notification_environment() {
+        for shell in ["powershell.exe", "cmd.exe", "wsl.exe", "bash.exe", "C:\\pwsh.exe\\other.exe", "other-pwsh.exe"] {
+            let mut cmd = CommandBuilder::new(shell);
+            cmd.env_clear();
+            apply_powershell_env(shell, &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), None, "{shell}");
+        }
+    }
 
     #[test]
     fn posix_shells_start_as_login_shells_everywhere() {

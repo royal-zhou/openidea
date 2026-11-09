@@ -24,8 +24,8 @@ globset.workspace = true
 tree-sitter.workspace = true
 tree-sitter-typescript = "0.23.2"
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 encoding_rs.workspace = true
-zip.workspace = true

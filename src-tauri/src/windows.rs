@@ -57,6 +57,9 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none).
+    #[serde(default)]
+    pub diff: Option<Box<DiffFilesLaunch>>,
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
@@ -93,6 +96,13 @@ pub struct ComparisonLaunch {
     pub repo: Option<ide_core::IpcPath>,
 }
 
+/// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DiffFilesLaunch {
+    pub left: ide_core::IpcPath,
+    pub right: ide_core::IpcPath,
+}
+
 /// A caret position for a file opened from the command line: 0-based line and column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +112,7 @@ pub struct FilePosition {
     pub column: u32,
 }
 
-/// A project folder on an SSH host or in a WSL distribution.
+/// A project folder on an SSH host, in a WSL distribution or in a dev container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteLaunch {
@@ -120,7 +130,9 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
-    pub groups_persist: tokio::sync::Mutex<()>,
+    /// Serialises writes of the saved session. Holds the previous run's session once read: it is
+    /// read before this run first overwrites the file, so restoring still sees it.
+    pub groups_persist: tokio::sync::Mutex<Option<Vec<ide_workspace::window_groups::SavedWindows>>>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
     positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
@@ -128,6 +140,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together.
+    close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
@@ -137,6 +152,21 @@ pub struct WindowsState {
 }
 
 impl WindowsState {
+    pub fn close_requested(&self, label: &str) {
+        let mut requests = self.close_requests.lock();
+        if !requests.iter().any(|l| l == label) {
+            requests.push(label.to_owned());
+        }
+    }
+
+    pub fn close_settled(&self, label: &str) {
+        self.close_requests.lock().retain(|l| l != label);
+    }
+
+    pub fn pending_closes(&self) -> Vec<String> {
+        self.close_requests.lock().clone()
+    }
+
     pub fn set_launch(&self, label: &str, launch: Launch) {
         self.launches.lock().insert(label.to_owned(), launch);
     }
@@ -175,6 +205,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.close_settled(label);
         self.launches.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
@@ -274,6 +305,21 @@ pub fn settings_label(parent: &str) -> String {
     format!("{}-{parent}", AuxKind::Settings.name())
 }
 
+/// Held from choosing a project window's label until the window exists.
+static CREATING: Mutex<()> = Mutex::new(());
+
+/// Windows being built to join a window group, which takes their frame from the group.
+#[cfg(target_os = "macos")]
+static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
+/// group takes the group's frame instead; restoring a fullscreen state its label kept from an
+/// earlier window would give it a fullscreen Space of its own.
+#[cfg(target_os = "macos")]
+pub fn keeps_window_state(label: &str) -> bool {
+    !JOINING_GROUP.lock().iter().any(|l| l == label)
+}
+
 /// The window state key: one geometry per auxiliary kind, else the label itself.
 pub fn state_key(label: &str) -> &str {
     auxiliary(label).map_or(label, |(kind, _)| kind.name())
@@ -342,6 +388,9 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
 /// Flags followed by a value (`--line 12`).
 const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
 
+/// The subcommand opening two files side by side (`openidea diff a.txt b.txt`).
+const DIFF_ARG: &str = "diff";
+
 /// The project path from command-line arguments (`openidea /path/to/project`):
 /// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
@@ -358,6 +407,50 @@ pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
         return Some(if p.is_absolute() { p } else { cwd.join(p) });
     }
     None
+}
+
+/// What the command line asks to open (arguments after the binary, resolved against `cwd`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliLaunch {
+    /// `openidea diff a.txt b.txt`: the two files side by side in the diff viewer.
+    Diff(DiffFilesLaunch),
+    /// A project folder or a file (`openidea /path/to/project`).
+    Path(PathBuf),
+}
+
+/// What the command line asks to open; see [`CliLaunch`].
+pub fn cli_launch(args: &[String], cwd: &Path) -> Option<CliLaunch> {
+    if args.get(1).map(String::as_str) == Some(DIFF_ARG) {
+        return match cli_diff_paths(args, cwd).as_slice() {
+            [left, right, ..] => {
+                Some(CliLaunch::Diff(DiffFilesLaunch { left: left.clone().into(), right: right.clone().into() }))
+            }
+            // One file is no pair: open it like any path.
+            [one] => Some(CliLaunch::Path(one.clone())),
+            // `openidea diff` with no files: like starting without arguments.
+            [] => None,
+        };
+    }
+    cli_path(args, cwd).map(CliLaunch::Path)
+}
+
+/// The file paths of a `diff` subcommand (everything after it that is not a flag or a flag's
+/// value), resolved against `cwd`.
+fn cli_diff_paths(args: &[String], cwd: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut rest = args.iter().skip(2);
+    while let Some(a) = rest.next() {
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            rest.next();
+            continue;
+        }
+        if a.starts_with('-') || a.is_empty() {
+            continue;
+        }
+        let p = PathBuf::from(a);
+        paths.push(if p.is_absolute() { p } else { cwd.join(p) });
+    }
+    paths
 }
 
 /// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
@@ -480,6 +573,9 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         config.visible = false;
     }
     let state = app.try_state::<AppState>();
+    if let Some(state) = &state {
+        state.plugins.reopen_client(&config.label);
+    }
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
     let plugin_frame = state.as_ref().and_then(|s| s.plugins.startup_frame()).and_then(|c| hex_color(&c));
@@ -495,6 +591,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -589,6 +687,8 @@ fn create_window_for(
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    // The label is free only until the window exists, so concurrent opens take turns.
+    let creating = CREATING.lock();
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -607,9 +707,22 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    let window = build_project_window(app, config)?;
     #[cfg(target_os = "macos")]
-    crate::macos::intercept_toggle_fullscreen(&window);
+    if tab_target.is_some() {
+        JOINING_GROUP.lock().push(label.clone());
+        // Selecting it in the group shows it; shown before, a window opened over a fullscreen
+        // group lands on the desktop and takes the screen there.
+        config.visible = false;
+    }
+    let window = build_project_window(app, config);
+    drop(creating);
+    // Plugins hear of the window from the main thread's queue; forget it after them.
+    #[cfg(target_os = "macos")]
+    if tab_target.is_some() {
+        let joined = label.clone();
+        let _ = app.run_on_main_thread(move || JOINING_GROUP.lock().retain(|l| *l != joined));
+    }
+    let window = window?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
@@ -729,7 +842,7 @@ pub enum Holds {
         distro: String,
         path: String,
     },
-    /// An SSH remote project.
+    /// An SSH or dev container remote project.
     Other,
 }
 
@@ -737,7 +850,7 @@ impl Holds {
     fn of_remote(remote: &RemoteLaunch) -> Self {
         match &remote.target {
             RemoteTarget::Wsl { distro } => Holds::Wsl { distro: distro.clone(), path: remote.path.clone() },
-            RemoteTarget::Ssh { .. } => Holds::Other,
+            RemoteTarget::Ssh { .. } | RemoteTarget::DevContainer { .. } => Holds::Other,
         }
     }
 
@@ -923,8 +1036,17 @@ pub fn open_path(app: &AppHandle, path: &Path) {
 /// Opens paths from outside the app (a second instance, Finder's Open With, the Dock):
 /// see [`plan_open`]; the focused window is the preferred free one.
 pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
+    let (existing, missing): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| path.exists());
+    if !missing.is_empty() {
+        let paths = missing.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+        app.state::<AppState>().sink.emit(ide_core::IdeEvent::Notify {
+            level: ide_core::event::NotifyLevel::Warning,
+            title: "Cannot open path".into(),
+            body: Some(format!("The path does not exist:\n{paths}")),
+        });
+    }
     let preferred = target_window(app).map(|w| w.label().to_owned());
-    run_open(app, plan_open(resolve(paths), &window_holds(app, preferred.as_deref())));
+    run_open(app, plan_open(resolve(existing), &window_holds(app, preferred.as_deref())));
 }
 
 /// What each window holds, `preferred` first.
@@ -1005,8 +1127,28 @@ fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
 
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
-    match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => {
+    if args.iter().any(|arg| arg == crate::jump_list::OPEN_RECENT_ARG)
+        && let Some(path) = cli_path(&args, Path::new(&cwd)).filter(|path| path.exists())
+    {
+        let target = target_window(app)
+            .filter(|window| auxiliary_parent(window.label()).is_none())
+            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+        if let Some(window) = target {
+            let _ = app.emit_to(
+                window.label(),
+                crate::menu::MENU_EVENT,
+                crate::menu::MenuRoute {
+                    action: crate::menu::OPEN_RECENT_ACTION.into(),
+                    arg: Some(ide_core::ipc_path::to_ipc(&path)),
+                },
+            );
+            focus(&window);
+            return;
+        }
+    }
+    match cli_launch(&args, Path::new(&cwd)) {
+        Some(CliLaunch::Diff(diff)) => open_diff_files(app, diff),
+        Some(CliLaunch::Path(path)) => {
             remember_cli_position(&app.state::<WindowsState>(), &args, &path);
             open_path(app, &path)
         }
@@ -1017,6 +1159,27 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
                 spawn_window(app, None);
             }
         }
+    }
+}
+
+/// `openidea diff a.txt b.txt` while the app is running: hands the pair to the window the user is
+/// looking at (a project window, never an auxiliary one), else opens a new window for it.
+fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
+    let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
+    let target = target_window(app)
+        .filter(|window| auxiliary_parent(window.label()).is_none())
+        .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+    if let Some(window) = target {
+        app.state::<WindowsState>().set_launch(window.label(), launch);
+        let _ = app.emit_to(window.label(), LAUNCH_EVENT, ());
+        focus(&window);
+    } else {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = create_window_for(&app, None, launch, false) {
+                tracing::warn!("cannot open window: {}", e.message);
+            }
+        });
     }
 }
 
@@ -1099,6 +1262,8 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -1418,6 +1583,39 @@ mod tests {
         assert_eq!(
             cli_path(&s(&["openidea", "--line=3", "a b/文件.rs"]), cwd),
             Some(PathBuf::from("/work/a b/文件.rs"))
+        );
+    }
+
+    #[test]
+    fn cli_launch_parses_the_diff_subcommand() {
+        let cwd = Path::new("/work");
+        // Two paths: a diff pair; relative paths resolve against the cwd.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "a.txt", "b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+        );
+        // Absolute paths stay absolute; a path with spaces is one argument (the shell unquotes it
+        // before the arguments reach us).
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "/abs/my a.txt", "my b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/abs/my a.txt".into(), right: "/work/my b.txt".into() }))
+        );
+        // Flags and their values are not file paths.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "--line", "3", "a.txt", "b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+        );
+        // One file is no pair: it opens like any path.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "a.txt"]), cwd),
+            Some(CliLaunch::Path(PathBuf::from("/work/a.txt")))
+        );
+        // No files at all: like starting without arguments.
+        assert_eq!(cli_launch(&s(&["openidea", "diff"]), cwd), None);
+        // Only a leading `diff` is the subcommand; the rest still opens a path.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "proj", "diff", "a.txt"]), cwd),
+            Some(CliLaunch::Path(PathBuf::from("/work/proj")))
         );
     }
 

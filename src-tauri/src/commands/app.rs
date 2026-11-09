@@ -46,7 +46,9 @@ pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
 #[tauri::command]
 #[specta::specta]
 pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    state.recent.remove(&path)
+    state.recent.remove(&path)?;
+    crate::jump_list::refresh(&state.app, state.recent.list());
+    Ok(())
 }
 
 /// The welcome screen's project groups.
@@ -83,10 +85,8 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let info = project_info(&project);
     let _ = window.set_title(&info.name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
-    let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
-    if grouped {
-        crate::window_groups::persist(window.app_handle()).await?;
-    }
+    // Every project window is part of the session reopened at the next start.
+    crate::window_groups::persist(window.app_handle()).await?;
     Ok(info)
 }
 
@@ -125,10 +125,12 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
     let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
     project.settings.set(SettingsScope::Project, "general.projectName", value)?;
     state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
+    crate::jump_list::refresh(&state.app, state.recent.list());
     Ok(project_info(&project))
 }
 
-#[tauri::command]
+// Not on the main thread: closing stops the project's language servers, runs and file watcher.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -235,6 +237,15 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     Ok(SettingsImport { settings, storage })
 }
 
+/// Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
+    tauri::async_runtime::spawn_blocking(move || ide_workspace::settings::read_jetbrains_settings(&path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Effective source / test / resource / excluded roots of the window's project:
 /// auto-detected from build files, overridden by Settings › Project Structure.
 #[tauri::command]
@@ -310,6 +321,13 @@ pub async fn project_trust_set(
         state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    state.trust.add_location(&path)?;
+    state.host.refresh_project_trust().await
 }
 
 #[tauri::command]
