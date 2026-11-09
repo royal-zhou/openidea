@@ -35,18 +35,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-apple-darwin }
       - uses: Swatinem/rust-cache@v2
-        with: { key: x86_64-apple-darwin }
+        with: { key: x86_64-apple-darwin, cache-on-failure: true }
       - run: pnpm install --frozen-lockfile
       - name: Build Intel Mac DMG
         run: |
-          pnpm tauri build --target x86_64-apple-darwin --bundles dmg \
+          pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg \
             --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
-      - name: Verify and upload DMG
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify Intel Mac DMG
         run: |
           bundle=target/x86_64-apple-darwin/release/bundle
           lipo -verify_arch x86_64 "$bundle/macos/OpenIDEA.app/Contents/MacOS/openidea"
-          dmg="$bundle/dmg/OpenIDEA_${TAG#v}_x64.dmg"
-          hdiutil verify "$dmg"
+          hdiutil verify "$bundle/dmg/OpenIDEA_${TAG#v}_x64.dmg"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: OpenIDEA-macos-x64
+          path: target/x86_64-apple-darwin/release/bundle/dmg/*_x64.dmg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload Intel Mac DMG to Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dmg="target/x86_64-apple-darwin/release/bundle/dmg/OpenIDEA_${TAG#v}_x64.dmg"
           gh release upload "$TAG" "$dmg"
