@@ -10,6 +10,7 @@ permissions:
 
 concurrency:
   group: release-intel-dmg-v0.1.39
+  cancel-in-progress: true
 
 env:
   TAG: v0.1.39
@@ -44,7 +45,7 @@ jobs:
       - name: Verify Intel Mac DMG
         run: |
           bundle=target/x86_64-apple-darwin/release/bundle
-          lipo -verify_arch x86_64 "$bundle/macos/OpenIDEA.app/Contents/MacOS/openidea"
+          lipo "$bundle/macos/OpenIDEA.app/Contents/MacOS/openidea" -verify_arch x86_64
           hdiutil verify "$bundle/dmg/OpenIDEA_${TAG#v}_x64.dmg"
       - uses: actions/upload-artifact@v6
         with:
