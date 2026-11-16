@@ -22,6 +22,8 @@ import { installSelectionHighlights, type SelectionHighlightController } from ".
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
+import { trackScrollbackErase } from "./scrollback";
+import { protectSynchronizedOutput } from "./synchronizedOutput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { parseShellCommand } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
@@ -325,6 +327,8 @@ export class TerminalSession {
 
     this.disposables.push(
       watchWindowsPty(this.term),
+      // xterm 6.0 leaves the viewport detached after ED3 erases the history it was showing.
+      ...trackScrollbackErase(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -518,6 +522,8 @@ export class TerminalSession {
     // selected text rendered at a visibly different weight than the rest.
     this.term.open(this.host);
     installDomRowCache(this.term);
+    // DOM selection redraws bypass the render service's DEC 2026 guard.
+    protectSynchronizedOutput(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
       this.term,
