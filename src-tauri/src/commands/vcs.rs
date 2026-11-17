@@ -61,6 +61,18 @@ pub async fn vcs_file_at(
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
 }
 
+/// `rev`'s copy of an image as a `data:` URL, for the diff viewer's image comparison.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_read_image(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    rev: Option<String>,
+) -> IdeResult<Option<String>> {
+    ide_host::ops::vcs::vcs_read_image(&state.host, window.label(), path, rev).await
+}
+
 /// The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
 /// worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
 #[tauri::command]

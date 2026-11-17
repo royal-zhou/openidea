@@ -536,6 +536,8 @@ export const commands = {
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	/**  Files a JS/TS module specifier names, when the language server has no definition for it. */
+	fsResolveModule: (from: IpcPath, specifier: string) => typedError<ModuleTarget[], IdeError>(__TAURI_INVOKE("fs_resolve_module", { from, specifier })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
@@ -715,6 +717,8 @@ export const commands = {
 	 *  worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
 	 */
 	vcsFileMode: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_mode", { path, rev })),
+	/**  `rev`'s copy of an image as a `data:` URL, for the diff viewer's image comparison. */
+	vcsReadImage: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_read_image", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	/**
 	 *  History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
@@ -8062,6 +8066,14 @@ export type ModuleStructureSettings = {
 	dependencies?: ModuleDependency[],
 };
 
+/**  One resolved file (or folder) and the rule that produced it. */
+export type ModuleTarget = {
+	path: IpcPath,
+	dir: boolean,
+	/**  Human-readable origin, e.g. `tsconfig paths "@/*"` or `vite alias "@"`. */
+	via: string,
+};
+
 /**
  *  A named set of files: `file:src//*.ts && !file:*.test.ts` (project-relative path patterns
  *  joined with `||`, `&&`, `!` and parentheses).
@@ -11085,6 +11097,11 @@ export type TypeScriptSettings = {
 	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
 	 */
 	tsserverMaxMemory?: number,
+	/**
+	 *  `prefix=target` aliases for Go to Declaration when no static config matches
+	 *  (a dynamic vite/webpack config). Targets are project-relative.
+	 */
+	pathAliases?: string[],
 };
 
 /**  A misspelt word. */

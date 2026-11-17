@@ -1466,11 +1466,14 @@ pub struct TypeScriptSettings {
     /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
     /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
     pub tsserver_max_memory: u32,
+    /// `prefix=target` aliases for Go to Declaration when no static config matches
+    /// (a dynamic vite/webpack config). Targets are project-relative.
+    pub path_aliases: Vec<String>,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into(), tsserver_max_memory: 0 }
+        Self { version: "bundled".into(), tsserver_max_memory: 0, path_aliases: Vec::new() }
     }
 }
 

@@ -602,3 +602,37 @@
     min-height: 90px;
   }
 }
+/* Files of the selected worktree, under the Worktrees tree. */
+.worktreeFiles {
+  flex: 1;
+  min-height: 120px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.worktreeFilesTitle {
+  position: sticky;
+  top: 0;
+  padding: 4px 8px;
+  background: var(--bg-app);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.worktreeFile {
+  width: 100%;
+  height: var(--h-row);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding-right: 8px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.worktreeFile:hover {
+  background: var(--bg-hover);
+}

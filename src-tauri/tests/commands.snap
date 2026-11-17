@@ -243,6 +243,7 @@ fs_read_image                                always             project_host bin
 fs_read_range                                always             project_host bindings async
 fs_read_text                                 always             project_host bindings async
 fs_rename                                    always             project_host bindings async
+fs_resolve_module                            trusted            project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
 gh_account_repos                             trusted            desktop      bindings async
@@ -640,6 +641,7 @@ vcs_move_worktree                            trusted            project_host bin
 vcs_open_external_log                        always             project_host bindings async
 vcs_operation                                trusted            project_host bindings async
 vcs_patch_preview                            trusted            project_host bindings async
+vcs_read_image                               trusted            project_host bindings async
 vcs_rebase                                   trusted            project_host bindings async
 vcs_rebase_with                              trusted            project_host bindings async
 vcs_remote                                   trusted            project_host bindings async

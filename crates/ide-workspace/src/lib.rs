@@ -11,6 +11,7 @@ pub mod file_ops;
 pub mod file_refs;
 pub mod history;
 pub mod memory;
+pub mod module_refs;
 pub mod process;
 pub mod project_discovery;
 pub mod recent;

@@ -8538,5 +8538,9 @@
   "Extract Interface from '{name}'": "从 '{name}' 提取接口",
   "The interface could not be extracted": "无法提取接口",
   "Extract Interface is not supported for {name}": "{name} 不支持提取接口",
-  "Package for new interface": "新接口的软件包"
+  "Package for new interface": "新接口的软件包",
+  "Path aliases": "路径别名",
+  "Fallback when tsconfig paths or vite aliases are dynamic: one prefix=target per line, target relative to the project root.": "当 tsconfig paths 或 vite 别名是动态生成时的回退方案：每行一个 prefix=target，target 相对于项目根目录。",
+  "Cannot switch worktree": "无法切换工作树",
+  "Worktree files": "工作树文件"
 }

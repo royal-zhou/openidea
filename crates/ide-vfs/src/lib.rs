@@ -22,7 +22,7 @@ pub use archive::{
     read_archive_entry, split_archive_path,
 };
 pub use bytes::{
-    ByteRange, FileProbe, MAX_RANGE_LEN, base64, content_path_allowed, image_mime, on_local_drive, probe,
+    ByteRange, FileProbe, MAX_RANGE_LEN, base64, content_path_allowed, data_url, image_mime, on_local_drive, probe,
     read_data_url, read_range, same_share,
 };
 pub use compare::{

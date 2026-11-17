@@ -25,7 +25,12 @@ export type Reference =
   /** A folder: revealed in the project view. */
   | { kind: "folder"; from: number; to: number; path: string }
   /** A link whose file does not exist (reported, never opened). */
-  | { kind: "missing"; from: number; to: number; value: string };
+  | { kind: "missing"; from: number; to: number; value: string }
+  /** A JS/TS module specifier (`@/components/Foo.vue`), resolved by the backend. */
+  | { kind: "module"; from: number; to: number; specifier: string };
+
+/** The module-specifier member of {@link Reference}. */
+export type ModuleReference = Extract<Reference, { kind: "module" }>;
 
 // --- document links ----------------------------------------------------------
 
@@ -113,6 +118,52 @@ export function textReference(text: Text, offset: number): Reference | null {
   return null;
 }
 
+/** Explicit relative paths with no suffix on the final segment. */
+export function isExtensionlessRelativePath(value: string): boolean {
+  const path = value.split(/[?#]/, 1)[0]!;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return /^\.\.?\//.test(path) && !!name && !name.includes(".");
+}
+
+/** Languages whose quoted `import` / `require` specifiers may be module paths. */
+const MODULE_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"]);
+
+/** Whether the caret is on the binding side of an import from a bare package. */
+export function isPackageImportBinding(text: Text, offset: number, language: string): boolean {
+  if (!MODULE_LANGUAGES.has(language)) return false;
+  const line = text.lineAt(offset);
+  const clause = /^\s*(?:import|export)\s+(.+?)\s+from\s*['"](?:@[\w.-]+\/)?[\w-]/.exec(line.text);
+  return !!clause && offset - line.from < clause[0].lastIndexOf("from");
+}
+
+/** `import … from "x"`, `export … from "x"`, `import "x"`, `require("x")`, `import("x")`. */
+const MODULE_SPECIFIER_RE =
+  /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire(?:\.resolve)?\s*\(\s*|\bimport\s+)(["'`])([^"'`\n]+)\1/g;
+
+/** The module specifier at `offset`, optionally including a relative import's binding. */
+export function moduleReferenceAt(
+  text: Text,
+  offset: number,
+  language: string,
+  includeRelativeBinding = false,
+): ModuleReference | null {
+  if (!MODULE_LANGUAGES.has(language)) return null;
+  const line = text.lineAt(offset);
+  const col = offset - line.from;
+  for (const m of line.text.matchAll(MODULE_SPECIFIER_RE)) {
+    const value = m[2] ?? "";
+    const start = m.index + m[0].lastIndexOf(value);
+    const onBinding =
+      includeRelativeBinding &&
+      isExtensionlessRelativePath(value) &&
+      m[0].startsWith("from") &&
+      col < m.index &&
+      /^\s*(?:import|export)\s+/.test(line.text);
+    if (!value || (!onBinding && (col < start || col > start + value.length))) continue;
+    return { kind: "module", from: line.from + start, to: line.from + start + value.length, specifier: value };
+  }
+  return null;
+}
 async function isFile(path: string): Promise<boolean> {
   if (!isTauri()) return false;
   try {
@@ -140,6 +191,15 @@ export async function resolvePath(ref: Reference, from: string): Promise<Referen
   return (await isFile(path))
     ? { kind: "file", from: ref.from, to: ref.to, path, fragment }
     : { kind: "folder", from: ref.from, to: ref.to, path };
+}
+/** Resolves a module specifier through tsconfig `paths`, JS config aliases, or workspace packages. */
+export async function resolveModule(ref: Reference, from: string): Promise<Reference | null> {
+  if (ref.kind !== "module") return ref;
+  if (!isTauri()) return null;
+  const targets = await call(commands.fsResolveModule(from, ref.specifier)).catch(() => []);
+  const target = targets[0];
+  if (!target) return { kind: "missing", from: ref.from, to: ref.to, value: ref.specifier };
+  return { kind: "file", from: ref.from, to: ref.to, path: target.path };
 }
 
 // --- following ----------------------------------------------------------------
@@ -203,6 +263,8 @@ export async function followReference(ref: Reference): Promise<void> {
  * named by a quoted path. Null when there is none.
  */
 export async function referenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<Reference | null> {
+  const module = moduleReferenceAt(view.state.doc, offset, doc.language);
+  if (module && !doc.virtual) return resolveModule(module, doc.path);
   const link = linkReference(view.state.doc, await documentLinks(view, doc), offset, doc.path);
   const ref = textReference(view.state.doc, offset);
   if (link?.kind !== "file") {

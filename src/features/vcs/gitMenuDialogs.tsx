@@ -31,6 +31,7 @@ import {
   worktreeMoveTarget,
   type RepoWorktrees,
 } from "./worktrees";
+import { switchToWorktree, WorktreeFiles } from "./worktreeFiles";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -646,7 +647,7 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
       width={620}
       buttons={[{ label: "Close", role: "default", autoFocus: true, onClick: onClose }]}
     >
-      <WorktreesPanel className={styles.form} />
+      <WorktreesPanel className={styles.form} onSwitched={onClose} />
     </Dialog>
   );
 }
@@ -664,7 +665,16 @@ interface WorktreeNode {
  * Branches pane, with New / Remove / Open: the Worktrees dialog's content and the Git
  * tool window's Worktrees tab. `listClassName` replaces the dialog's default height.
  */
-export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+export function WorktreesPanel({
+  className,
+  listClassName,
+  onSwitched,
+}: {
+  className?: string;
+  listClassName?: string;
+  /** Called after this window switches to the worktree, so a host dialog can close. */
+  onSwitched?: () => void;
+}) {
   const projectRoot = useProject((s) => s.project?.root);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
@@ -753,6 +763,18 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     await reload();
   };
 
+  /** Makes a worktree this window's project; a host dialog closes once it has. */
+  const switchTo = async (path: string) => {
+    try {
+      const result = await switchToWorktree(path);
+      if (result !== "cancelled") onSwitched?.();
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      notifications().notify({ group: "vcs", level: "error", title: "Cannot switch worktree", body: message });
+    }
+  };
+
   const move = async () => {
     if (!current || !currentGroup || current.main || containsProject) return;
     const { open } = await import("@/platform/dialog");
@@ -834,7 +856,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         selected={selectedKeys}
         multiSelect={false}
         onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-        onActivate={(n) => n.worktree && void executeAction("file.openProjectPath", n.worktree.path)}
+        onActivate={(n) => n.worktree && void switchTo(n.worktree.path)}
         className={listClassName ?? styles.worktreeListDialog}
         aria-label="Worktrees"
       />
@@ -846,6 +868,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             </div>
           ),
       )}
+      {current && <WorktreeFiles key={current.path} root={current.path} />}
       {error && <div className={styles.error}>{error}</div>}
     </div>
   );

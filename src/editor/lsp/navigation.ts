@@ -76,6 +76,7 @@ import {
   documentLinks,
   followReference,
   fragmentOffset,
+  isPackageImportBinding,
   knownLinks,
   linkReference,
   referenceAt,
@@ -319,16 +320,25 @@ const editedAt = new WeakMap<EditorView, number>();
  * version meanwhile (kotlin-language-server: nothing for ~300 ms after typing).
  * An empty answer right after an edit is asked again a few times.
  */
-async function gotoAfterEdits(
+async function gotoWhenReady(
   view: EditorView,
   request: () => Promise<DeclarationTarget[]>,
   superseded: () => boolean,
+  packageImport: boolean,
 ) {
+  // Vue's TypeScript bridge answers nothing while it loads a package, and reports no LSP
+  // work-done progress meanwhile: a package import waits for a deadline instead.
+  const deadline = performance.now() + 5000;
   for (let attempt = 0; ; attempt++) {
     const locs = await request();
-    if (locs.length || attempt >= 3 || superseded() || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500)
+    if (locs.length || superseded()) return locs;
+    if (
+      packageImport
+        ? performance.now() >= deadline
+        : attempt >= 3 || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500
+    )
       return locs;
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, packageImport ? 500 : 250));
     if (superseded()) return [];
   }
 }
@@ -478,6 +488,7 @@ async function gotoResolved(
   // A segment of an import path names a file — possibly in a dependency project, which
   // neither the single-root server nor the name index resolves.
   const moduleName = declaration ? importModuleName(view, doc, offset) : null;
+  const packageImport = declaration && !doc.virtual && isPackageImportBinding(view.state.doc, offset, doc.language);
   if (moduleName) {
     const module = await moduleFile(doc, moduleName).catch(() => null);
     if (module) {
@@ -494,7 +505,7 @@ async function gotoResolved(
     const stream = kind === "implementation" ? streamedImplementations(view, offset, done, superseded) : null;
     streamed = stream;
     const request = stream ? () => stream.request(doc.doc, pos) : () => requestNavigation(view, offset, kind);
-    locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
+    locs = dedupeLocations(await gotoWhenReady(view, request, superseded, packageImport));
   } catch (e) {
     // The chooser shows the first ones: closing it cancelled the search, or the rest failed.
     if (streamed && (await streamed.opened())) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, linkReference, looksLikePath, resolvePath, textReference } from "./links";
+import { fragmentOffset, linkReference, looksLikePath, moduleReferenceAt, resolvePath, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -105,5 +105,28 @@ describe("links and fragments", () => {
       }
     }
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
+  });
+});
+
+describe("module references", () => {
+  const js = (src: string, language = "typescript") => {
+    const { text, offset } = at(src);
+    return moduleReferenceAt(text, offset, language);
+  };
+
+  it("finds import, export, require and dynamic import specifiers", () => {
+    expect(js('import Foo from "@/comp|onents/Foo.vue"')).toMatchObject({
+      kind: "module",
+      specifier: "@/components/Foo.vue",
+    });
+    expect(js('export { x } from "./x|"')).toMatchObject({ specifier: "./x" });
+    expect(js('const x = require("@/x|")')).toMatchObject({ specifier: "@/x" });
+    expect(js('const x = import("@/y|")')).toMatchObject({ specifier: "@/y" });
+  });
+
+  it("only fires inside the specifier and in JS-like languages", () => {
+    const source = 'import Foo from "@/components/Foo.vue"';
+    expect(moduleReferenceAt(Text.of([source]), 3, "typescript")).toBeNull();
+    expect(js('import Foo from "@/comp|onents/Foo.vue"', "python")).toBeNull();
   });
 });

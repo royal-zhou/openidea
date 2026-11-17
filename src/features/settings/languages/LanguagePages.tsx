@@ -665,6 +665,7 @@ export function MavenPage() {
 export function TypeScriptPage() {
   const [version, setVersion] = useSetting<string>("languages.typescript.version");
   const [memory, setMemory] = useSetting<number>("languages.typescript.tsserverMaxMemory");
+  const [aliases, setAliases] = useSetting<string[]>("languages.typescript.pathAliases");
   const { list } = useDetected("typeScript");
   const workspace = list.find((s) => s.source === "workspace");
   const options = useMemo<SelectOption[]>(() => {
@@ -721,6 +722,14 @@ export function TypeScriptPage() {
             onChange={(v) => setMemory(Number(v))}
             aria-label="tsserver memory limit"
           />
+        </Row>
+      </Section>
+      <Section>
+        <Row
+          label="Path aliases"
+          hint="Fallback when tsconfig paths or vite aliases are dynamic: one prefix=target per line, target relative to the project root."
+        >
+          <GlobListEditor value={aliases} onChange={setAliases} placeholder="@=src" aria-label="Path aliases" />
         </Row>
       </Section>
     </div>

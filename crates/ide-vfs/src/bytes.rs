@@ -171,10 +171,28 @@ pub fn read_data_url(path: &Path, opened: &[std::path::PathBuf]) -> IdeResult<St
     if !content_path_allowed(path, opened) {
         return Err(IdeError::invalid(format!("{} is not on a local drive or an opened share", path.display())));
     }
+    data_url(path, &read_image_bytes(path)?)
+}
+
+/// `bytes` as a `data:` URL, using `path`'s extension for the MIME type. Bytes of a git
+/// revision come from the repository rather than the disk, so the caller has them already.
+pub fn data_url(path: &Path, bytes: &[u8]) -> IdeResult<String> {
     let mime =
         image_mime(path).ok_or_else(|| IdeError::invalid(format!("{} is not a supported image", path.display())))?;
+    if bytes.len() as u64 > MAX_IMAGE_SIZE {
+        return Err(IdeError::invalid(format!(
+            "{} is too large to preview ({} MiB)",
+            path.display(),
+            bytes.len() as u64 / (1024 * 1024)
+        )));
+    }
+    Ok(format!("data:{mime};base64,{}", base64(bytes)))
+}
+
+/// The image's bytes, from an archive entry or the disk.
+fn read_image_bytes(path: &Path) -> IdeResult<Vec<u8>> {
     if let Some(bytes) = archive_bytes(path, MAX_IMAGE_SIZE)? {
-        return Ok(format!("data:{mime};base64,{}", base64(&bytes)));
+        return Ok(bytes);
     }
     let meta = fs::metadata(path)?;
     if meta.len() > MAX_IMAGE_SIZE {
@@ -184,8 +202,7 @@ pub fn read_data_url(path: &Path, opened: &[std::path::PathBuf]) -> IdeResult<St
             meta.len() / (1024 * 1024)
         )));
     }
-    let bytes = fs::read(path)?;
-    Ok(format!("data:{mime};base64,{}", base64(&bytes)))
+    Ok(fs::read(path)?)
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -290,6 +290,20 @@ pub async fn fs_resolve_reference(
     })
     .await
 }
+/// The files a JS/TS module specifier names (`@/x`, `@acme/ui`, `#internal`): the fallback
+/// when the language server has no definition for it. Every candidate is returned, so the
+/// UI can show its chooser when two files match.
+pub async fn fs_resolve_module(
+    host: &Host,
+    window: &str,
+    from: IpcPath,
+    specifier: String,
+) -> IdeResult<Vec<ide_workspace::module_refs::ModuleTarget>> {
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let aliases = project.settings.effective().languages.typescript.path_aliases;
+    blocking(move || Ok(ide_workspace::module_refs::resolve_with(&root, &from, &specifier, &aliases))).await
+}
 
 /// Files and folders that continue `prefix`, a path being typed in `from`.
 pub async fn path_completions(
@@ -356,6 +370,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("nav_inheritance", |c| async move { nav_inheritance(&c.host, &c.window).await });
     d.add("fs_resolve_reference", |c| async move {
         fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
+    });
+    d.add("fs_resolve_module", |c| async move {
+        fs_resolve_module(&c.host, &c.window, c.arg("from")?, c.arg("specifier")?).await
     });
     d.add("path_completions", |c| async move {
         path_completions(&c.host, &c.window, c.arg("from")?, c.arg("prefix")?).await

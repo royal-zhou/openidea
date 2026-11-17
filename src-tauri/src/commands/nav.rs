@@ -170,6 +170,17 @@ pub async fn fs_resolve_reference(
 ) -> IdeResult<Option<IpcPath>> {
     ide_host::ops::nav::fs_resolve_reference(&state.host, window.label(), from, value).await
 }
+/// Files a JS/TS module specifier names, when the language server has no definition for it.
+#[tauri::command]
+#[specta::specta]
+pub async fn fs_resolve_module(
+    window: Window,
+    state: State<'_, AppState>,
+    from: IpcPath,
+    specifier: String,
+) -> IdeResult<Vec<ide_workspace::module_refs::ModuleTarget>> {
+    ide_host::ops::nav::fs_resolve_module(&state.host, window.label(), from, specifier).await
+}
 
 /// Files and folders that continue `prefix`, a path being typed in `from`.
 #[tauri::command]

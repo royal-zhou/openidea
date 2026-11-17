@@ -196,7 +196,7 @@ export interface LanguagesValid {
     buildTags: GoBuildTags;
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
-  typescript: { version: string };
+  typescript: { version: string; pathAliases: string[] };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
@@ -290,7 +290,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
-  typescript: { version: "bundled" },
+  typescript: { version: "bundled", pathAliases: [] },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
   ruff: DEFAULT_RUFF_FORMATTER,
@@ -459,7 +459,12 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         ) as Record<string, string>,
       },
     },
-    typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
+    typescript: {
+      version: text(ts.version, d.typescript.version) || d.typescript.version,
+      pathAliases: Array.isArray(ts.pathAliases)
+        ? ts.pathAliases.filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim())
+        : d.typescript.pathAliases,
+    },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
     ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
